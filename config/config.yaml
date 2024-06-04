@@ -1,0 +1,3 @@
+min_global_SJ_counts: 30
+min_cells_per_feature: 30
+min_cells_per_intron_group: 40

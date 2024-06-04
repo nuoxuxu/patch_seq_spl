@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Lab
+.ipynb_checkpoints/
+
+# RStudio Apptainer
+.local/
+.config/
+.cache/
+
+# VS Code
+.vscode/
+# pyrightconfig.json
+# typings/
+
+# conda environment
+envs/
+env/
+
+# data and results
+proc/
+
+# snakemake
+.snakemake/
+
+# python
+*egg-info/
+.DS_Store

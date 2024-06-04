@@ -1,0 +1,35 @@
+name: patch_seq_spl
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - numpy
+  - pandas
+  - scanpy
+  - statsmodels
+  - anndata
+  - pytorch::pytorch
+  - pyro-ppl
+  - scipy
+  - tqdm
+  - snakemake
+  - ipykernel
+  - ca-certificates
+  - certifi
+  - openssl
+  - cffi
+  - r-svglite
+  - conda-forge::pyarrow
+  - conda-forge::r-mglm
+  - dask
+  - r-tidyverse
+  - r-jsonlite
+  - r-languageserver
+  - r-rlang
+  - r-remotes
+  - radian
+  - scikit-learn
+  - matplotlib
+  - conda-forge::r-lmtest
+prefix: /Users/xunuo/miniforge3/envs/patch_seq_spl
