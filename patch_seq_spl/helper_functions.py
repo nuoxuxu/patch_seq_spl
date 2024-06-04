@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from typing import Literal
 ###################################################
 # [1] AnnData utilities
 ###################################################
@@ -128,14 +129,16 @@ def get_corr_matrix_only(adata, subclass, top=100):
     corr_matrix, fdr, ion_channel_gene_i = get_corr_matrix_fdr(adata_unique_intron_group, top)
     return corr_matrix
 
-def get_glm_results(path):
+def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value"):
     """
-    Get p-values from likelihood ratio test
+    Get p-values or effect sizes from likelihood ratio test
     The csv file has to contain the columns "event_name" and "p_value"
 
     Args:
         path: str
             path to directory containing csv files
+        key: str
+            "p_value" or "statistic"
 
     Returns:
         glm_results: pd.DataFrame
@@ -147,16 +150,26 @@ def get_glm_results(path):
     from statsmodels.stats.multitest import fdrcorrection    
     glm_results = dd.read_csv([path for path in Path(path).iterdir()], include_path_column = True)\
         .rename(columns = {"Unnamed: 0": "event_name"})\
-        .pivot_table(index = "event_name", columns = "path", values = "p_value").compute()
+        .pivot_table(index = "event_name", columns = "path", values = key).compute()
     glm_results.rename(columns = {path: Path(path).stem for path in glm_results.columns}, inplace = True)
     glm_results = glm_results.dropna()
     glm_results = pd.DataFrame(
         fdrcorrection(glm_results.values.flatten())[1].reshape(glm_results.shape), 
         index = glm_results.index, 
         columns = glm_results.columns)
+    
+    if path.endswith("quantas"):
+        event_name_gene_name = pd.read_csv("data/quantas/Mm.seq.all.AS.chrom.can.id2gene2symbol", sep = "\t", header = None)\
+            .set_index(0)\
+            .loc[:, 2]\
+            .to_dict()        
+        glm_results["gene_name"] = glm_results.index.map(event_name_gene_name)
+        glm_results["gene_name"] = glm_results.groupby("gene_name").cumcount().add(1).astype(str).radd(glm_results["gene_name"] + '_')
+        glm_results = glm_results.set_index("gene_name")
+
     return glm_results
 
-def rank_introns_by_n_sig_corr(glm_results, rank_by, top):
+def rank_introns_by_n_sig_corr(glm_results, rank_by):
     '''
     Rank introns by the number of significant correlations
 
@@ -175,15 +188,10 @@ def rank_introns_by_n_sig_corr(glm_results, rank_by, top):
     if rank_by == "all":
         p_value_matrix = glm_results.loc[glm_results.apply(lambda x: (x < 0.05)).sum(axis = 1).sort_values(ascending = False).index]
     else:
-        p_value_matrix = glm_results.loc[glm_results[rank_by].sort_values(ascending = True).index]
-
-    if isinstance(top, int):
-        return p_value_matrix.iloc[:top]
-    elif top == "all":
-        if rank_by == "all":
-            return glm_results.loc[glm_results.apply(lambda x: (x < 0.05)).sum(axis = 1) > 0]
-        else:
-            return glm_results.loc[glm_results[rank_by] < 0.05]
+        glm_results[rank_by]
+        p_value_matrix = glm_results.loc[glm_results[rank_by].abs().sort_values(ascending = False).index]
+    
+    return p_value_matrix
 
 def get_sig_gene_list(predictor, glm_results):
     return list(set([x.split("_")[0] for x in glm_results.loc[glm_results[predictor] < 0.05, predictor].index.to_list()]))
@@ -192,77 +200,7 @@ def get_sig_gene_list(predictor, glm_results):
 # [2] Plotting utilities
 ###################################################
 
-def plot_glm_results(res_path, top = 100, vmin = 0, vmax = 150, cpm = False, soma_depth = False, subclass = False, save_path = False):
-    import matplotlib.pyplot as plt
-    import matplotlib as mpl
-    import json
-    import numpy
-
-    VGIC_LGIC = np.load("proc/VGIC_LGIC.npy", allow_pickle= True)
-    prop_names = json.load(open("data/mappings/prop_names.json", "r"))
-    
-    glm_results = get_glm_results(res_path).replace(0, np.nan)
-    p_value_matrix = rank_introns_by_n_sig_corr(glm_results, top = top)
-    p_value_matrix = p_value_matrix.drop(["cpm", "soma_depth"], axis = 1)
-    cpm_matrix = p_value_matrix["cpm"].to_frame()
-    soma_depth_matrix = p_value_matrix["soma_depth"].to_frame()
-
-    IC_idx = np.flatnonzero(np.isin(p_value_matrix.reset_index()["intron_group"].str.split("_", expand = True)[0].values, VGIC_LGIC))
-
-    # Plotting parameters
-    cmap = "Reds"
-    colorbar_label = "-log10(p-value)"
-    textcolors=("black", "white")
-    kw = dict(horizontalalignment="center", verticalalignment="center")
-
-    # Create the figure
-    num_extra_axes = sum([soma_depth, subclass, cpm])
-    fig, axs = plt.subplots(1, 1+num_extra_axes, figsize=(10, 1+5*(top/25)),
-                            gridspec_kw={'width_ratios': [20] + np.repeat([1], num_extra_axes).tolist()}, 
-                            sharey=True,
-                            constrained_layout=True)
-
-    # Plot the first axes (ephys_props)
-    im = axs[0].imshow(-np.log10(p_value_matrix), aspect="auto", cmap = cmap, vmin = vmin, vmax = vmax)
-    axs[0].set_xticks(np.arange(len(p_value_matrix.columns)))
-    axs[0].set_yticks(np.arange(len(p_value_matrix.index)))
-    axs[0].set_xticklabels(p_value_matrix.columns.map(prop_names), rotation=45, ha='right', fontsize = 13)
-
-    yticklabels = p_value_matrix.index.to_list()
-    y_labels = axs[0].get_yticklabels()
-    for i in IC_idx:
-        y_labels[i].set_color("red")
-    axs[0].set_yticklabels(yticklabels)
-
-    fdr = np.vectorize({True: "*", False: " "}.get)(p_value_matrix< 0.05)
-    texts = []
-    for i in range(fdr.shape[0]):
-        for j in range(fdr.shape[1]):
-            kw.update(color=textcolors[int(im.norm(p_value_matrix.iloc[i, j]) > 0)])
-            text = im.axes.text(j, i, fdr[i, j], **kw)
-            texts.append(text) 
-            
-    fig.colorbar(mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(vmin = vmin, vmax = vmax), 
-                cmap=cmap), ax=axs, shrink=0.4, aspect = 25, location = "top", 
-                pad = 0.01, label = colorbar_label)
-    
-    # Plot the other axes (soma_depth)
-
-    im_1 = axs[1].imshow(-np.log10(cpm_matrix), aspect="auto", cmap = cmap, vmin = vmin, vmax = vmax)
-    axs[1].set_xticks([])
-    axs[1].set_xticklabels([])
-
-    fdr = np.vectorize({True: "*", False: " "}.get)(cpm_matrix < 0.05).squeeze()
-    texts = []
-    for i in range(fdr.shape[0]):
-        kw.update(color=textcolors[int(im_1.norm(cpm_matrix.iloc[i]) > 0)])
-        text = im_1.axes.text(0, i, fdr[i], **kw)
-        texts.append(text) 
-    
-    if save_path:
-        plt.savefig(save_path)
-
-def plot_glm_results_all(res_path, rank_by = "all", top = 100, vmin = 0, vmax = 150, save_path = False):
+def plot_glm_results(res_path, rank_by = "all", top = 100, vmin = 0, vmax = 150, save_path = False):
     import matplotlib.pyplot as plt
     import matplotlib as mpl
     import json
