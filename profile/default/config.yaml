@@ -1,6 +1,0 @@
-# executor: slurm
-jobs: 100
-use-conda: true
-# default-resources:
-#   slurm_account: "rrg-shreejoy"
-#   nodes: 1

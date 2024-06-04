@@ -102,9 +102,6 @@ rule beta_binomial:
     output:
         "results/quantas/{predictor}.csv"
     resources:
-        runtime = "5h",
-        mem_mb = "120G",
-        cpus_per_task = 12,
-        partition = "medium"
+        runtime="1h"
     shell:
         "Rscript scripts/beta_binomial.R {wildcards.predictor}"
