@@ -8,6 +8,8 @@ library(glue)
 library(arrow)
 library(VGAM)
 
+options(warn=-1)
+
 # define helper functions
 read_isoformTags <- function(file_name) {
     out <- arrow::read_parquet(glue("data/quantas/{file_name}.parquet")) %>% as.data.frame()
@@ -48,11 +50,15 @@ run_regression <- function(isoform1Tags, isoform2Tags, event_name, prop_name, st
             .[[2]]
         c(statistic, p_value)
     } else if (statistical_model == "beta_binomial") {
-        model0 <- vglm(cbind(isoform1Tags, isoform2Tags) ~ 1, betabinomial(imethod = 1), data = temp)
-        model1 <- vglm(cbind(isoform1Tags, isoform2Tags) ~ ephys_prop, betabinomial(imethod = 1), data = temp)
-        statistic <- attr(model1, "coefficients")["ephys_prop"] %>% unname()
-        p_value <- VGAM::lrtest(model0, model1)@Body[2, "Pr(>Chisq)"]
-        c(statistic, p_value)
+        tryCatch({
+            model0 <- vglm(cbind(isoform1Tags, isoform2Tags) ~ 1, betabinomial(), data = temp)
+            model1 <- vglm(cbind(isoform1Tags, isoform2Tags) ~ ephys_prop, betabinomial(), data = temp)
+            statistic <- attr(model1, "coefficients")["ephys_prop"] %>% unname()
+            p_value <- VGAM::lrtest(model0, model1)@Body[2, "Pr(>Chisq)"]
+            c(statistic, p_value)
+        }, error = function(e) {
+            c(NA, NA)
+        })
     }
 }
 
