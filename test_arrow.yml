@@ -1,0 +1,15 @@
+name: /home/s/shreejoy/nxu/miniforge3/envs/test_arrow
+channels:
+  - conda-forge
+  - bioconda
+  - pytorch
+dependencies:
+  - r-arrow
+  - r-lmtest
+  - r-broom
+  - r-matrix
+  - r-jsonlite
+  - r-tidyverse
+  - ca-certificates
+  - openssl
+prefix: /home/s/shreejoy/nxu/miniforge3/envs/test_arrow

@@ -14,6 +14,7 @@ install.packages("arrow")
 However, for CentOS it is more complicated, C++17 is required which is not provided by CentOS, see [Installation details](https://arrow.apache.org/docs/r/articles/developers/install_details.html)
 
 TODO Install r-arrow on CentOS Linux
+A solution is have one seqparate environment for r-arrow, `test_arrow`
 ### on local machine
 Download processed data from Niagara
 ```bash

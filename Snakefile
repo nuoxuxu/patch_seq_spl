@@ -96,6 +96,6 @@ rule beta_binomial:
         "results/quantas/{statistical_model}/{predictor}.csv"
     resources:
         runtime="1h"
-    conda: "patch_seq_spl"
+    conda: "test_arrow"
     shell:
         "Rscript scripts/beta_binomial.R {wildcards.predictor} {wildcards.statistical_model}"
