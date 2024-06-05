@@ -15,10 +15,9 @@ categorical_predictors = ['Sst', 'Pvalb', 'Vip', 'Lamp5', 'Sncg', 'Serpinf1', 's
 all_predictors = continuous_predictors + categorical_predictors
 runtime_dict = {"simple": "5h", "multiple": "24h"}
 
-# rule all:
-#     input: 
-#         expand("proc/{group_by}/simple/{predictor}.csv", group_by=["three", "five"], predictor=continuous_predictors, allow_missing=True, model=["simple", "multiple"]),
-#         expand("proc/{group_by}/multiple/{predictor}.csv", group_by=["three", "five"], predictor = all_predictors, allow_missing=True)
+rule all:
+    input:
+        expand("proc/quantas/beta_binomial/{predictor}.csv", predictor=ephys_props)
 
 # rule all:
 #     input:
@@ -93,7 +92,7 @@ rule Fig1_heatmap:
 
 rule beta_binomial:
     output:
-        "results/quantas/{statistical_model}/{predictor}.csv"
+        "proc/quantas/{statistical_model}/{predictor}.csv"
     resources:
         runtime="1h"
     conda: "test_arrow"
