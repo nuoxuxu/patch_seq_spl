@@ -186,7 +186,7 @@ def get_sig_gene_list(glm_results, predictor):
 # [2] Plotting utilities
 ###################################################
 
-def plot_glm_results(res_path, rank_by = "all", top = 100, vmin = 0, vmax = 150, save_path = False):
+def plot_glm_results(glm_results, rank_by = "all", top = 100, vmin = 0, vmax = 150, save_path = False):
     import matplotlib.pyplot as plt
     import matplotlib as mpl
     import json
@@ -195,10 +195,13 @@ def plot_glm_results(res_path, rank_by = "all", top = 100, vmin = 0, vmax = 150,
     VGIC_LGIC = np.load("data/VGIC_LGIC.npy", allow_pickle= True)
     prop_names = json.load(open("data/mappings/prop_names.json", "r"))
     
-    glm_results = get_glm_results(res_path).replace(0, np.nan)
+    glm_results = glm_results.replace(0, np.nan)
     p_value_matrix = rank_introns_by_n_sig_corr(glm_results, rank_by = rank_by)[:top]
 
-    IC_idx = np.flatnonzero(np.isin(p_value_matrix.reset_index()["event_name"].str.split("_", expand = True)[0].values, VGIC_LGIC))
+    try:
+        IC_idx = np.flatnonzero(np.isin(p_value_matrix.reset_index()["event_name"].str.split("_", expand = True)[0].values, VGIC_LGIC))
+    except KeyError:
+        IC_idx = np.flatnonzero(np.isin(p_value_matrix.reset_index()["gene_name"].str.split("_", expand = True)[0].values, VGIC_LGIC))
 
     # Plotting parameters
     cmap = "Reds"

@@ -9,14 +9,14 @@ library(jsonlite)
 library(ggplot2)
 src <- import("patch_seq_spl.helper_functions")
 
-glm_results <- src$get_glm_results("proc/three/simple")
+glm_results <- src$get_glm_results("proc/scquint/three/simple")
 prop_labels <- fromJSON("data/mappings/prop_names.json") %>% unlist()
 all_predictors <- glm_results %>% colnames()
 universe <- glm_results %>%
     rownames() %>%
     stringr::str_extract("^[^_]*") %>%
     unique()
-gene_list <- sapply(all_predictors, function(x) {src$get_sig_gene_list(x, glm_results)})
+gene_list <- sapply(all_predictors, function(x) {src$get_sig_gene_list(glm_results, x)})
 
 get_ora_per_subcategory <- function(gene_list, universe, subcategory, rank_by = "count", top = 20) {
     db <- msigdbr(species = "Mus musculus", category = "C5", subcategory = str_glue("GO:{subcategory}"))
@@ -91,13 +91,17 @@ plot_pheatmap <- function(gene_list, universe, rank_by, top) {
 # Use pheatmap for three_multiple
 plot_pheatmap(gene_list, universe, "Pvalb", 20)
 
+three_simple <- get_mat_for_heatmap(gene_list, universe, "Pvalb", 20)
+annotation_row <- data.frame(row.names = row.names(three_simple[[1]]), subcategory =  three_simple[[2]])
+
 pheatmap(
-    three_multiple[[1]],
+    three_simple[[1]],
     cluster_rows = FALSE,
     cluster_cols = FALSE,
     annotation_row = annotation_row,
-    labels_col = colnames(three_multiple[[1]]),
+    labels_col = colnames(three_simple[[2]]),
     legend_labels = "-log10(padj)",
     width = 7,
     height = 7.5,
-    filename = "results/figures/ORA_three_multiple.png")
+    # filename = "proc/figures/ORA_three_multiple.png"
+    )
