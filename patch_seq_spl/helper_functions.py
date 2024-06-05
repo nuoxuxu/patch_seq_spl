@@ -116,19 +116,6 @@ def get_interactive_heatmap_(adata, corr_matrix):
         interactive_heatmap.layers[ephys_prop] = np.hstack(psi_list)
     return interactive_heatmap
 
-def get_interactive_heatmap(adata, subclass, top=100):
-    adata = add_corr_fdr(adata, subclass=subclass)
-    adata_unique_intron_group = get_adata_unique_intron_group(adata)
-    corr_matrix, fdr, ion_channel_gene_i = get_corr_matrix_fdr(adata_unique_intron_group, top)
-    interactive_heatmap = get_interactive_heatmap_(adata, corr_matrix)
-    return interactive_heatmap
-
-def get_corr_matrix_only(adata, subclass, top=100):
-    adata = add_corr_fdr(adata, subclass=subclass)
-    adata_unique_intron_group = get_adata_unique_intron_group(adata)
-    corr_matrix, fdr, ion_channel_gene_i = get_corr_matrix_fdr(adata_unique_intron_group, top)
-    return corr_matrix
-
 def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value"):
     """
     Get p-values or effect sizes from likelihood ratio test
@@ -149,16 +136,16 @@ def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value")
     from pathlib import Path
     from statsmodels.stats.multitest import fdrcorrection    
     glm_results = dd.read_csv([path for path in Path(path).iterdir()], include_path_column = True)\
-        .rename(columns = {"Unnamed: 0": "event_name"})\
         .pivot_table(index = "event_name", columns = "path", values = key).compute()
     glm_results.rename(columns = {path: Path(path).stem for path in glm_results.columns}, inplace = True)
     glm_results = glm_results.dropna()
+    #TODO Why does fdrcorrection turn quantas p values all into 1?
     glm_results = pd.DataFrame(
         fdrcorrection(glm_results.values.flatten())[1].reshape(glm_results.shape), 
         index = glm_results.index, 
         columns = glm_results.columns)
     
-    if path.endswith("quantas"):
+    if "quantas" in path:
         event_name_gene_name = pd.read_csv("data/quantas/Mm.seq.all.AS.chrom.can.id2gene2symbol", sep = "\t", header = None)\
             .set_index(0)\
             .loc[:, 2]\
@@ -188,12 +175,11 @@ def rank_introns_by_n_sig_corr(glm_results, rank_by):
     if rank_by == "all":
         p_value_matrix = glm_results.loc[glm_results.apply(lambda x: (x < 0.05)).sum(axis = 1).sort_values(ascending = False).index]
     else:
-        glm_results[rank_by]
-        p_value_matrix = glm_results.loc[glm_results[rank_by].abs().sort_values(ascending = False).index]
+        p_value_matrix = glm_results.loc[glm_results[rank_by].abs().sort_values(ascending = True).index]
     
     return p_value_matrix
 
-def get_sig_gene_list(predictor, glm_results):
+def get_sig_gene_list(glm_results, predictor):
     return list(set([x.split("_")[0] for x in glm_results.loc[glm_results[predictor] < 0.05, predictor].index.to_list()]))
 
 ###################################################
@@ -210,7 +196,7 @@ def plot_glm_results(res_path, rank_by = "all", top = 100, vmin = 0, vmax = 150,
     prop_names = json.load(open("data/mappings/prop_names.json", "r"))
     
     glm_results = get_glm_results(res_path).replace(0, np.nan)
-    p_value_matrix = rank_introns_by_n_sig_corr(glm_results, rank_by = rank_by, top = top)
+    p_value_matrix = rank_introns_by_n_sig_corr(glm_results, rank_by = rank_by)[:top]
 
     IC_idx = np.flatnonzero(np.isin(p_value_matrix.reset_index()["event_name"].str.split("_", expand = True)[0].values, VGIC_LGIC))
 
@@ -250,61 +236,7 @@ def plot_glm_results(res_path, rank_by = "all", top = 100, vmin = 0, vmax = 150,
                 pad = 0.01, label = colorbar_label)
 
     if save_path:
-        plt.savefig(save_path)        
-
-def plot_corr_matrix(adata_list, top = 25, vmin = -1, vmax = 1, cmap = "Reds", colorbar_label = "Pearson's correlation coefficient"):
-    '''
-    Plot cross-correlation heatmap for a single or a list of adata objects
-    in a column, showing top n introns that have most number of dx
-    correlations with ephys properties
-
-    Args:
-        adata_list: a list of adata objects
-        top: number of introns to show in the heatmap
-
-    Returns:
-        fig: a matplotlib figure object
-    '''
-    import matplotlib.pyplot as plt
-    import matplotlib as mpl
-    assert isinstance(adata_list, list)
-    textcolors=("black", "white")
-    kw = dict(horizontalalignment="center", verticalalignment="center")
-    def plot_single_ax(adata, ax):
-        corr_matrix, fdr, ion_channel_gene_i = get_corr_matrix_fdr(adata, top)
-        im = ax.imshow(corr_matrix, aspect="auto", cmap = cmap, vmin = vmin, vmax = vmax)
-        ax.set_xticks(np.arange(len(corr_matrix.columns)))
-        ax.set_yticks(np.arange(len(corr_matrix.index)))
-        ax.set_xticklabels(corr_matrix.columns, rotation=45, ha='right', fontsize = 13)
-
-        # setting yticklabels
-        yticklabels = corr_matrix.index.to_list()
-        y_labels = ax.get_yticklabels()
-        for i in ion_channel_gene_i:
-            y_labels[i].set_color("red")
-        ax.set_yticklabels(yticklabels)
-        # add asteriks to significant correlations
-        fdr = np.vectorize({True: "*", False: " "}.get)(fdr)
-        texts = []
-        for i in range(fdr.shape[0]):
-            for j in range(fdr.shape[1]):
-                kw.update(color=textcolors[int(im.norm(corr_matrix.iloc[i, j]) > 0)])
-                text = im.axes.text(j, i, fdr[i, j], **kw)
-                texts.append(text)            
-    
-    fig, axs = plt.subplots(len(adata_list), 1, figsize=(8, 2+len(adata_list)*5*(top/25)), sharex = True, layout = "constrained")
-    if len(adata_list) == 1:
-        plot_single_ax(adata_list[0], axs)
-        fig.colorbar(mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(vmin = vmin, vmax = vmax), 
-                    cmap=cmap), ax=axs, shrink=0.4, aspect = 25, location = "top", 
-                    pad = 0.01, label = colorbar_label)
-    else:
-        for ax, adata in (zip(axs, adata_list)):
-            plot_single_ax(adata, ax)
-            fig.colorbar(mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(vmin = vmin, vmax = vmax), 
-                        cmap=cmap), ax=axs, shrink=0.4, aspect = 25, location = "top", 
-                        pad = 0.01, label = colorbar_label)
-    return fig
+        plt.savefig(save_path)
 
 def plot_scatter_per_intron(adata, intron, ephys_prop):
     '''
