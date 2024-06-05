@@ -4,12 +4,13 @@ channels:
   - bioconda
   - defaults
 dependencies:
+  - python=3.12.3
   - numpy
   - pandas
   - scanpy
   - statsmodels
   - anndata
-  - pytorch::pytorch
+  - pytorch
   - pyro-ppl
   - scipy
   - tqdm
