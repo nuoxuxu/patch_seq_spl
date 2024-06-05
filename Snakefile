@@ -14,13 +14,6 @@ continuous_predictors = ephys_props + ["soma_depth", "cpm"]
 categorical_predictors = ['Sst', 'Pvalb', 'Vip', 'Lamp5', 'Sncg', 'Serpinf1', 'subclass']
 all_predictors = continuous_predictors + categorical_predictors
 runtime_dict = {"simple": "5h", "multiple": "24h"}
-OS = platform.system()
-OS_dict = {"Linux": "wget", "Darwin": "curl"}
-
-rule all:
-    input: 
-        expand("results/quantas/{predictor}.csv", predictor=ephys_props)
-
 
 # rule all:
 #     input: 
@@ -100,8 +93,9 @@ rule Fig1_heatmap:
 
 rule beta_binomial:
     output:
-        "results/quantas/{predictor}.csv"
+        "results/quantas/{statistical_model}/{predictor}.csv"
     resources:
         runtime="1h"
+    conda: "patch_seq_spl"
     shell:
-        "Rscript scripts/beta_binomial.R {wildcards.predictor}"
+        "Rscript scripts/beta_binomial.R {wildcards.predictor} {wildcards.statistical_model}"
