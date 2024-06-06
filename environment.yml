@@ -5,14 +5,11 @@ channels:
   - defaults
 dependencies:
   - python=3.12.3
-  - numpy
-  - pandas
   - scanpy
   - statsmodels
   - anndata
   - pytorch
   - pyro-ppl
-  - scipy
   - tqdm
   - snakemake
   - ipykernel
@@ -21,16 +18,14 @@ dependencies:
   - openssl
   - cffi
   - r-svglite
-  - conda-forge::pyarrow
-  - conda-forge::r-mglm
+  - pyarrow
+  - r-mglm
   - dask
   - r-tidyverse
-  - r-jsonlite
   - r-languageserver
   - r-rlang
-  - r-remotes
+  - r-arrow
+  - r-devtools
   - radian
-  - scikit-learn
-  - matplotlib
-  - conda-forge::r-lmtest
+  - r-reticulate
 prefix: /Users/xunuo/miniforge3/envs/patch_seq_spl
