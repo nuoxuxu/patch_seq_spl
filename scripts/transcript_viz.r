@@ -5,9 +5,6 @@ library(ggplot2)
 library(rtracklayer)
 library(reticulate)
 
-# intron_group_list <- read.csv("proc/to_R/corr_matrix.csv", row.names = "intron_group") %>% rownames()
-# gene_list <- sapply(strsplit(intron_group_list, "_"), "[", 1)
-
 gtf_path <- "/scratch/s/shreejoy/nxu/Genomic_references/mm39/Mus_musculus.GRCm39.110.gtf"
 biotypes <- c("protein_coding", "pseudogene", "nonsense_mediated_decay", "processed_transcript")
 annotation_from_gtf <- rtracklayer::import(gtf_path) %>%
