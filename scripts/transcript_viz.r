@@ -42,8 +42,7 @@ get_base_plot <- function(annodation_gene_name) {
             data = to_intron(exons, "transcript_name"),
             aes(strand = strand),
             arrow.min.intron.length = 500
-        ) +
-        
+        )
 }
 
 get_transcripts_to_plot <- function(intron_group) {
