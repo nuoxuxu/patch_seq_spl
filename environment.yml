@@ -17,15 +17,7 @@ dependencies:
   - certifi
   - openssl
   - cffi
-  - r-svglite
-  - pyarrow
-  - r-mglm
-  - dask
-  - r-tidyverse
-  - r-languageserver
-  - r-rlang
-  - r-arrow
-  - r-devtools
   - radian
-  - r-reticulate
+  - pyarrow
+  - dask
 prefix: /Users/xunuo/miniforge3/envs/patch_seq_spl
