@@ -1,37 +1,44 @@
 # Preparation
 
 ## Setting up environment
-Install required packages in a new conda environment
+
+### Setting up conda environment
+Install required packages in a new conda environment from `environment.yml`.
+If you are doing this on a local machine:
 ```bash
-mamba create -n patch_seq_spl numpy pandas scanpy statsmodels anndata pytorch::pytorch pyro-ppl scipy cffi scikit-learn tqdm snakemake r-svglite pyarrow
+mamba env create -n patch_seq_spl
+```
+If you are doing this on Niagara, clone the repository to `$SCRATCH` and `cd` to the project root:
+```bash
+mamba env create -p ./envs/patch_seq_spl
 ```
 
-
-`r-arrow` cannot be installed through conda, for macOS it can be installed:
-```r
-install.packages("arrow")
-```
-However, for CentOS it is more complicated, C++17 is required which is not provided by CentOS, see [Installation details](https://arrow.apache.org/docs/r/articles/developers/install_details.html)
-
-TODO Install r-arrow on CentOS Linux
-A solution is have one seqparate environment for r-arrow, `test_arrow`
-### on local machine
-Download processed data from Niagara
-```bash
-rsync -av nxu@nia-datamover1.scinet.utoronto.ca:/scratch/s/shreejoy/nxu/patch_seq_spl/proc/ proc
-```
-Tested under macOS
-### On a computing cluster
-- Install conda environment from environment.yaml
-```bash
-mamba env create --prefix ./env --file environment.yaml
-```
 - Use `Python: Select Interpreter command` in VS code to set the workspace-level Python interpreter as `.env/bin/python`
 - Turn on `python.terminal.activateEnvInCurrentTerminal`
 - Create a symbolic link, absolute path has to be used 
 ```bash
 ln -s /scratch/s/shreejoy/nxu/patch_seq_spl/env ${CONDA_PREFIX}/envs/patch_seq_spl
 ```
+
+### Setting up R environment
+Since R packages on conda-forge channels are out-dated in general and the bioconda channel does not support osx-arm64, it's better to not install R packages within the conda environment.
+
+Install R packages required for this project
+```r
+remotes::install_github("nx10/httpgd")
+install.packages(c("BiocManager", "tidyverse", "languageserver", "rlang", "arrow", "devtools", "reticulate", "svglite", "ggvenn", "rtracklayer"))
+BiocManager::install(c("GenomicRanges", "GenomeInfoDb", "S4Vectors"))
+devtools::install_github("dzhang32/ggtranscript")
+```
+
+## Getting data
+
+Download processed data from Niagara
+
+```bash
+rsync -av nxu@nia-datamover1.scinet.utoronto.ca:/scratch/s/shreejoy/nxu/patch_seq_spl/proc/ proc
+```
+
 ## Get genomic references 
 All genomic reference files can be found in $GENOMIC_DATA_DIR
 ```bash
