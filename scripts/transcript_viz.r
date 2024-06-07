@@ -5,18 +5,7 @@ library(ggplot2)
 library(rtracklayer)
 library(reticulate)
 
-# Load data
-
-gtf_path <- "/project/s/shreejoy/Genomic_references/mm39/Mus_musculus.GRCm39.110.gtf"
-biotypes <- c("protein_coding", "pseudogene", "nonsense_mediated_decay", "processed_transcript")
-sig_intron_attr <- read_csv("proc/scquint/sig_intron_attr.csv")
-annotation_from_gtf <- rtracklayer::import(gtf_path) %>%
-    dplyr::as_tibble() %>%
-    dplyr::filter(transcript_biotype %in% biotypes) %>% 
-    dplyr::select(seqnames, start, end, strand, type, gene_name, transcript_name, transcript_biotype, tag)
-
 # Define functions
-
 get_base_plot <- function(annodation_gene_name) {
     exons <- annodation_gene_name %>% filter(type == "exon")
     # obtain cds
@@ -59,7 +48,7 @@ get_transcripts_to_plot <- function(intron_group) {
             }
         }
         return(unique_combinations)
-    }        
+    }
     annotation <- annotation_from_gtf %>%
         filter(gene_name == strsplit(intron_group, "_")[[1]][1])
     start_sites <- sig_intron_attr %>% 
@@ -86,7 +75,7 @@ plot_intron_group <- function(intron_group, xmin = NULL, xmax = NULL) {
     if (is.infinite(xmin)) {
         xmin <- min(unique(pull(sig_intron_attr_subset, start)))
     }
-    if(is.null(xmax)) {
+    if (is.null(xmax)) {
         xmax <- annotation %>%
             filter(start == max(unique(pull(sig_intron_attr_subset, end)))+1) %>%
             pull(end) %>%
@@ -100,9 +89,9 @@ plot_intron_group <- function(intron_group, xmin = NULL, xmax = NULL) {
         drop_na() %>% 
         dplyr::rename(start = `end.y`) %>% 
         dplyr::select(c(start, end, transcript_name, strand))
-    annotation %>% 
+    annotation %>%
         get_base_plot()+
-        geom_junction(data = junctions, junction.y.max = 0.0004) +
+        geom_junction(data = junctions, junction.y.max = 1/(xmax-xmin)) +
         # geom_junction(data = junctions, junction.y.max = 0.5, color = "#006eff") +
         coord_cartesian(xlim = c(xmin, xmax)) +
         labs(title = intron_group) +
@@ -115,6 +104,3 @@ plot_intron_group <- function(intron_group, xmin = NULL, xmax = NULL) {
             nudge_y = 0.4
             )
 }
-
-# plot_intron_group("Kcnt1_2_25778080_+")
-# ggsave("Kcnt1_2_25778080_+.png", g, width = 10, height = 5, units = "in", dpi = 300)
