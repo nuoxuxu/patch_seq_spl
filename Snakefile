@@ -9,7 +9,7 @@ import json
 import random
 
 configfile: "config/config.yaml"
-localrules: preprocess, download_metadata, download_manifest, download_cpm, corr_array
+localrules: preprocess, download_metadata, download_manifest, download_cpm, corr_array, generate_bam_list
 
 ephys_props = pd.read_csv("data/ephys_data_sc.csv").columns[1:].to_list()
 continuous_predictors = ephys_props + ["soma_depth", "cpm"]
@@ -24,7 +24,6 @@ metadata["filename"] = metadata.transcriptomics_sample_id.map(transcriptomics_sa
 metadata.dropna(subset=["filename"], inplace=True)
 metadata["full_path"] = metadata["filename"].apply(lambda x: "".join(["/external/rprshnas01/netdata_kcni/stlab/Nuo/STAR_for_SGSeq/coord_bams/", x, "Aligned.sortedByCoord.out.bam"]) if x else None)
 metadata["T-type Label"] = metadata["T-type Label"].map(lambda x: "_".join(x.split(" ")))
-my_dict = metadata.groupby("T-type Label")["full_path"].apply(lambda x: x.tolist()).to_dict()
 
 # rule all:
 #     input:
@@ -34,9 +33,13 @@ my_dict = metadata.groupby("T-type Label")["full_path"].apply(lambda x: x.tolist
 #     input:
 #         expand("proc/{group_by}/simple/{predictor}.csv", group_by=["three", "five"], predictor=categorical_predictors, allow_missing=True)
 
+# rule all:
+#     input:
+#         expand("proc/merge_bams/{cell_type}.bam", cell_type=metadata["T-type Label"].unique())
+
 rule all:
     input:
-        expand("proc/merge_bams/{cell_type}.bam", cell_type=metadata["T-type Label"].unique())
+        expand("proc/merge_bams/{cell_type}.bam.bai", cell_type=metadata["T-type Label"].unique())        
 
 rule download_metadata:
     output: "data/20200711_patchseq_metadata_mouse.csv"
@@ -104,19 +107,15 @@ rule beta_binomial:
         "Rscript scripts/beta_binomial.R {wildcards.predictor} {wildcards.statistical_model}"
 
 ################# Merge BAMs #################
-def input_function(wildcards):
-    file_list = my_dict[wildcards.cell_type]
-    if len(file_list) > 20:
-        if len(file_list) > 50:
-            file_list = random.sample(file_list, 50)
-        with open("proc/merge_bams/{}.txt".format(wildcards.cell_type), "w") as f:
-            for file in file_list:
-                f.write(file + "\n")
-        return "proc/merge_bams/{}.txt".format(wildcards.cell_type)
+rule generate_bam_list:
+    output:
+        "proc/merge_bams/{cell_type}.txt"
+    script:
+        "scripts/generate_bam_list.py"
 
 rule merge_bams:
     input:
-        input_function
+        "proc/merge_bams/{cell_type}.txt"
     output:
         "proc/merge_bams/{cell_type}.bam"
     resources:
@@ -125,3 +124,15 @@ rule merge_bams:
         threads=12
     shell:
         "samtools merge -o {output} -b {input} -@ 8"
+
+rule index_bams:
+    input:
+        "proc/merge_bams/{cell_type}.bam"
+    output:
+        "proc/merge_bams/{cell_type}.bam.bai"
+    resources:
+        runtime=60,
+        mem_mb=150000,
+        threads=12
+    shell:
+        "samtools index {input} -@ 8"
