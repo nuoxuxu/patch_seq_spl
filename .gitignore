@@ -25,6 +25,7 @@ proc/
 
 # snakemake
 .snakemake/
+slurm_logs/
 
 # python
 *egg-info/
