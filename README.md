@@ -80,3 +80,29 @@ export PERL5LIB=/scratch/s/shreejoy/nxu/patch_seq_spl/tools/czplib
 ```bash
 olegoindex /scratch/s/shreejoy/nxu/Genomic_references/mm39/Mus_musculus.GRCm39.dna.primary_assembly.fa -p proc/
 ```
+
+# Visualization
+## ggsashimi
+Ran on dev02.camhres.ca:
+```bash
+python ~/tools/ggsashimi/ggsashimi.py -b proc/merge_bams/Sst_Calb2_Pdlim5.bam -c 2:66181571-66271179 -M 5 -g /external/rprshnas01/netdata_kcni/stlab/Nuo/patch_seq_spl/proc/Mus_musculus.GRCm39.110.gtf -o proc/figures/Sst_Calb2_Pdlim5 -F png --fix-y-scale --ann-height 3
+```
+![Sst_Calb2_Pdlim5](proc/figures/Sst_Calb2_Pdlim5_sashimi.png)
+However, the coordinates are covered by the annotation track. To get around this problem, I tried running `ggsashimi` in a docker container
+
+Build docker image
+```bash
+singularity pull ggsashimi.sif docker://guigolab/ggsashimi:latest
+singularity run -B $PWD:$PWD -W $PWD ggsashimi.sif -b proc/merge_bams/Sst_Calb2_Pdlim5.bam -c 2:66181571-66271179 -M 5 -g /external/rprshnas01/netdata_kcni/stlab/Nuo/patch_seq_spl/proc/Mus_musculus.GRCm39.110.gtf -o proc/figures/Sst_Calb2_Pdlim5_sashimi -F png
+```
+
+However, running `ggsashimi` gives out the error 
+```warning messages:
+1: In grDevices::png(..., res = dpi, units = "in") :
+  unable to load shared object '/opt/R/3.6.3/lib/R/library/grDevices/libs//cairo.so':
+  libtiff.so.5: cannot open shared object file: No such file or directory
+```
+
+Initially I thought this might be caused by the version of R in docker container overridden by conda R, but after commenting out the conda code in `~/.bashrc`, the error persists.
+
+## gviz
