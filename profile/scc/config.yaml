@@ -1,8 +1,7 @@
-executor: slurm
 jobs: 100
 use-conda: true
 default-resources:
-  runtime: "5h",
-  nodes: 1,
-  mem_mb: "120G",
+  runtime: "5h"
+  nodes: 1
+  mem: "120GB"
   cpus_per_task: 12

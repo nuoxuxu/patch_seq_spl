@@ -5,6 +5,8 @@ import numpy as np
 import scquint.differential_splicing as ds
 import os
 import platform
+import json
+import random
 
 configfile: "config/config.yaml"
 localrules: preprocess, download_metadata, download_manifest, download_cpm, corr_array
@@ -15,13 +17,26 @@ categorical_predictors = ['Sst', 'Pvalb', 'Vip', 'Lamp5', 'Sncg', 'Serpinf1', 's
 all_predictors = continuous_predictors + categorical_predictors
 runtime_dict = {"simple": "5h", "multiple": "24h"}
 
-rule all:
-    input:
-        expand("proc/quantas/beta_binomial/{predictor}.csv", predictor=ephys_props)
+metadata = pd.read_csv('data/20200711_patchseq_metadata_mouse.csv')
+with open("data/mappings/transcriptomics_sample_id_file_name.json", "r") as f:
+    transcriptomics_sample_id_file_name = json.load(f)
+metadata["filename"] = metadata.transcriptomics_sample_id.map(transcriptomics_sample_id_file_name)
+metadata.dropna(subset=["filename"], inplace=True)
+metadata["full_path"] = metadata["filename"].apply(lambda x: "".join(["/external/rprshnas01/netdata_kcni/stlab/Nuo/STAR_for_SGSeq/coord_bams/", x, "Aligned.sortedByCoord.out.bam"]) if x else None)
+metadata["T-type Label"] = metadata["T-type Label"].map(lambda x: "_".join(x.split(" ")))
+my_dict = metadata.groupby("T-type Label")["full_path"].apply(lambda x: x.tolist()).to_dict()
+
+# rule all:
+#     input:
+#         expand("proc/quantas/beta_binomial/{predictor}.csv", predictor=ephys_props)
 
 # rule all:
 #     input:
 #         expand("proc/{group_by}/simple/{predictor}.csv", group_by=["three", "five"], predictor=categorical_predictors, allow_missing=True)
+
+rule all:
+    input:
+        expand("proc/merge_bams/{cell_type}.bam", cell_type=metadata["T-type Label"].unique())
 
 rule download_metadata:
     output: "data/20200711_patchseq_metadata_mouse.csv"
@@ -76,17 +91,6 @@ rule run_GLM:
         runtime = lambda wildcards: runtime_dict[wildcards.model]
     script: "scripts/run_GLM.py"
 
-# calculate correlation between PSI and ephys_prop, 
-# this would serve as the effect sizes, probably not needed anyway
-rule corr_array:
-    input: 
-        "proc/{group_by}/{model}",
-        "proc/preprocessed_adata_{group_by}.h5ad"
-    output: 
-        "proc/group_corr_array_{group_by}_{model}.csv",
-        "proc/intron_corr_array_{group_by}_{model}.csv",
-    script: "scripts/corr_array_for_plotting.py"
-
 rule Fig1_heatmap:
     script: "scripts/Fig1_heatmap.py"
 
@@ -98,3 +102,26 @@ rule beta_binomial:
     conda: "test_arrow"
     shell:
         "Rscript scripts/beta_binomial.R {wildcards.predictor} {wildcards.statistical_model}"
+
+################# Merge BAMs #################
+def input_function(wildcards):
+    file_list = my_dict[wildcards.cell_type]
+    if len(file_list) > 20:
+        if len(file_list) > 50:
+            file_list = random.sample(file_list, 50)
+        with open("proc/merge_bams/{}.txt".format(wildcards.cell_type), "w") as f:
+            for file in file_list:
+                f.write(file + "\n")
+        return "proc/merge_bams/{}.txt".format(wildcards.cell_type)
+
+rule merge_bams:
+    input:
+        input_function
+    output:
+        "proc/merge_bams/{cell_type}.bam"
+    resources:
+        runtime=120,
+        mem_mb=50000,
+        threads=12
+    shell:
+        "samtools merge -o {output} -b {input} -@ 8"
