@@ -20,4 +20,5 @@ dependencies:
   - radian
   - pyarrow
   - dask
+  - pysam
 prefix: /Users/xunuo/miniforge3/envs/patch_seq_spl
