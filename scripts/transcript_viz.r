@@ -5,12 +5,37 @@ library(ggplot2)
 library(rtracklayer)
 library(reticulate)
 
-# Define functions
+GENOMIC_DATA_DIR <- "/Users/xunuo/Genomic_references"
+gtf_path <- paste0(GENOMIC_DATA_DIR, "/Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.110.gtf")
+annotation_from_gtf <- rtracklayer::import(gtf_path)
+annotation_from_gtf <- subset(annotation_from_gtf, mcols(annotation_from_gtf)$type %in% c("exon", "CDS"))
+annotation_from_gtf <- annotation_from_gtf[mcols(annotation_from_gtf)$transcript_name %>% complete.cases(), ]
+
+anndata <- import("anndata")
+adata <- anndata$read_h5ad("proc/scquint/preprocessed_adata_three.h5ad")
+sig_intron_attr <- adata$var
+sig_intron_attr$annotation <- ifelse((sig_intron_attr$gene_id_start == "")|(sig_intron_attr$gene_id_end == ""), 0, 1)
+sig_intron_attr <- sig_intron_attr %>%
+    makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+start(sig_intron_attr) <- start(sig_intron_attr) - 1
+end(sig_intron_attr) <- end(sig_intron_attr) + 1
+
+findAdjacent <- function(query, subject) {
+    hits <- findOverlaps(query, subject)
+    get_width <- function(x) {
+        query[x[1]]
+        n <- length(subject[[x[2]]])
+        width(pintersect(rep(query[x[1]], n), subject[[x[2]]], drop.nohit.ranges=TRUE)) %>% unique()
+    }
+    ranges_to_keep <- apply(as.data.frame(hits), 1, get_width) %>% lapply(function(x) 1 %in% x) %>% unlist() %>% which()
+    hits[ranges_to_keep, ]
+}
+
 get_base_plot <- function(annodation_gene_name) {
-    exons <- annodation_gene_name %>% filter(type == "exon")
-    # obtain cds
-    cds <- annodation_gene_name %>% filter(type == "CDS")
-    # Differentiating UTRs from the coding sequence
+    exons <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "exon") %>%
+        as.data.frame()
+    cds <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "CDS") %>%
+        as.data.frame()
     exons %>%
         ggplot(
             aes(
@@ -34,73 +59,30 @@ get_base_plot <- function(annodation_gene_name) {
         )
 }
 
-get_transcripts_to_plot <- function(intron_group) {
-    get_unique_combinations <- function(input_list) {
-        unique_combinations <- list()
-        for (name in names(input_list)) {
-            combination <- input_list[[name]]
-            if (all(combination == FALSE)) next
-            combination_str <- paste(combination, collapse = "_")
-            if (!combination_str %in% names(unique_combinations)) {
-            unique_combinations[[combination_str]] <- c(name)
-            } else {
-            unique_combinations[[combination_str]] <- c(unique_combinations[[combination_str]], name)
-            }
-        }
-        return(unique_combinations)
-    }
-    annotation <- annotation_from_gtf %>%
-        filter(gene_name == strsplit(intron_group, "_")[[1]][1])
-    start_sites <- sig_intron_attr %>% 
-        filter(intron_group == {{intron_group}}) %>% 
-        pull(start)    
-    unique_combinations <- lapply(split(annotation$end, as.factor(annotation$transcript_name)), function(x) (start_sites - 1) %in% x) %>% 
-        get_unique_combinations()
-    lapply(unique_combinations, function(x) {x[[1]]}) %>%
-        unlist() %>%
-        unname()
-}
+plot_intron_group <- function(my_intron_group, adjacent_only = TRUE) {
+    my_gene_name <- str_split(my_intron_group, "_")[[1]][1]
 
-plot_intron_group <- function(intron_group, xmin = NULL, xmax = NULL) {
-    annotation <- annotation_from_gtf %>%
-        filter(transcript_name %in% get_transcripts_to_plot({{intron_group}}))
     sig_intron_attr_subset <- sig_intron_attr %>%
-        filter(intron_group == {{intron_group}})
-    if(is.null(xmin)) {
-        xmin <- annotation %>%
-            filter(end == min(unique(pull(sig_intron_attr_subset, start)))-1) %>%
-            pull(start) %>%
-            min()
+        subset(mcols(.)$intron_group == my_intron_group)
+
+    annotation_for_gene <- annotation_from_gtf %>%
+        subset(mcols(.)$gene_name == my_gene_name)
+
+    exonByTranscript <- split(annotation_for_gene, mcols(annotation_for_gene)$transcript_name)
+
+    if (adjacent_only) {
+        hits <- findAdjacent(sig_intron_attr_subset, exonByTranscript)
+    } else {
+        hits <- findOverlaps(sig_intron_attr_subset, exonByTranscript)
     }
-    if (is.infinite(xmin)) {
-        xmin <- min(unique(pull(sig_intron_attr_subset, start)))
-    }
-    if (is.null(xmax)) {
-        xmax <- annotation %>%
-            filter(start == max(unique(pull(sig_intron_attr_subset, end)))+1) %>%
-            pull(end) %>%
-            max()
-    }
-    junctions <- annotation %>% 
-        mutate(end = end + 1) %>%
-        filter(type == "exon") %>%
-        select(c(end, transcript_name)) %>% 
-        left_join(sig_intron_attr_subset, join_by(end == start)) %>% 
-        drop_na() %>% 
-        dplyr::rename(start = `end.y`) %>% 
-        dplyr::select(c(start, end, transcript_name, strand))
-    annotation %>%
-        get_base_plot()+
-        geom_junction(data = junctions, junction.y.max = 1/(xmax-xmin)) +
-        # geom_junction(data = junctions, junction.y.max = 0.5, color = "#006eff") +
-        coord_cartesian(xlim = c(xmin, xmax)) +
-        labs(title = intron_group) +
-        theme_light()+
-        # theme(legend.position = "none") +
-        geom_text(
-            data = add_exon_number(filter(annotation, type == "exon"), "transcript_name"),
-            aes(x = (start + end) / 2, label = exon_number),
-            size = 3.5,
-            nudge_y = 0.4
-            )
+
+    transcripts_to_plot <- names(exonByTranscript)[unique(subjectHits(hits))]
+
+    junctions <- as.data.frame(sig_intron_attr_subset)[queryHits(hits), ]
+    junctions$transcript_name <- names(exonByTranscript)[subjectHits(hits)]
+
+    exonByTranscript[transcripts_to_plot] %>%
+        unlist(use.names = FALSE) %>%
+        get_base_plot() +
+        geom_junction(data = junctions, junction.y.max = 0.5)
 }
