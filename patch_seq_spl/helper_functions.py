@@ -182,6 +182,27 @@ def rank_introns_by_n_sig_corr(glm_results, rank_by):
 def get_sig_gene_list(glm_results, predictor):
     return list(set([x.split("_")[0] for x in glm_results.loc[glm_results[predictor] < 0.05, predictor].index.to_list()]))
 
+def get_gene_from_intron_group(intron_group_list):
+    if isinstance(intron_group_list, pd.core.indexes.base.Index):
+        return intron_group_list.str.split("_", expand=True).get_level_values(0).tolist()
+    else:
+        return [x.split("_")[0] for x in intron_group_list]
+
+def get_VGIC_idx(gene_list):
+    """
+    Get the indices of VGIC genes in the gene list
+
+    Args:
+        gene_list: list of gene names
+
+    Returns:
+        list of indices of VGIC genes in the gene list
+    """
+    VGIC_LGIC = np.load("data/VGIC_LGIC.npy", allow_pickle=True)
+    if isinstance(gene_list, list) or isinstance(gene_list, np.ndarray):
+        gene_list = pd.Series(gene_list) 
+    return np.flatnonzero(gene_list.isin(VGIC_LGIC))
+        
 ###################################################
 # [2] Plotting utilities
 ###################################################
