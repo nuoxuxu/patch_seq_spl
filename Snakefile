@@ -9,7 +9,7 @@ import json
 import random
 
 configfile: "config/config.yaml"
-localrules: preprocess, download_metadata, download_manifest, download_cpm, corr_array, generate_bam_list
+localrules: preprocess, download_metadata, download_manifest, download_cpm, generate_bam_list
 
 ephys_props = pd.read_csv("data/ephys_data_sc.csv").columns[1:].to_list()
 continuous_predictors = ephys_props + ["soma_depth", "cpm"]
@@ -73,7 +73,7 @@ rule tabs_to_adata:
         metadata="data/20200711_patchseq_metadata_mouse.csv",
         manifest="data/2021-09-13_mouse_file_manifest.csv",
         gtf_path=Path(os.environ["GENOMIC_DATA_DIR"]).joinpath("Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.110.gtf")        
-    output: "proc/adata_{group_by}.h5ad"
+    output: "proc/scquint/adata_{group_by}.h5ad"
     resources: 
         runtime = "1h"
     script: "scripts/tabs_to_adata.py"
@@ -81,15 +81,15 @@ rule tabs_to_adata:
 # group_by is either "three" or "five"
 rule preprocess:
     input: 
-        adata_path="proc/adata_{group_by}.h5ad",
-    output: "proc/preprocessed_adata_{group_by}.h5ad"
+        adata_path="proc/scquint/adata_{group_by}.h5ad",
+    output: "proc/scquint/preprocessed_adata_{group_by}.h5ad"
     script: "scripts/preprocess.py"
 
 # predictor is "cpm", "soma_depth" and any of the ephys props
 # model is either "simple", "multiple" or "categorical"
 rule run_GLM:
-    input: "proc/preprocessed_adata_{group_by}.h5ad"
-    output: "proc/{group_by}/{model}/{predictor}.csv"
+    input: "proc/scquint/preprocessed_adata_{group_by}.h5ad"
+    output: "proc/scquint/{group_by}/{model}/{predictor}.csv"
     resources:
         runtime = lambda wildcards: runtime_dict[wildcards.model]
     script: "scripts/run_GLM.py"
