@@ -14,7 +14,6 @@ annotation_from_gtf <- annotation_from_gtf[mcols(annotation_from_gtf)$transcript
 anndata <- import("anndata")
 adata <- anndata$read_h5ad("proc/scquint/preprocessed_adata_three.h5ad")
 sig_intron_attr <- adata$var
-sig_intron_attr$annotation <- ifelse((sig_intron_attr$gene_id_start == "")|(sig_intron_attr$gene_id_end == ""), 0, 1)
 sig_intron_attr <- sig_intron_attr %>%
     makeGRangesFromDataFrame(keep.extra.columns = TRUE)
 start(sig_intron_attr) <- start(sig_intron_attr) - 1
