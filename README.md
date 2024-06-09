@@ -27,7 +27,7 @@ Install R packages required for this project
 ```r
 remotes::install_github("nx10/httpgd")
 install.packages(c("BiocManager", "tidyverse", "languageserver", "rlang", "arrow", "devtools", "reticulate", "svglite", "ggvenn", "rtracklayer"))
-BiocManager::install(c("GenomicRanges", "GenomeInfoDb", "S4Vectors"))
+BiocManager::install(c("GenomicRanges", "GenomeInfoDb", "S4Vectors", "Gviz"))
 devtools::install_github("dzhang32/ggtranscript")
 ```
 

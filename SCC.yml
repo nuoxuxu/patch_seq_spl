@@ -1,0 +1,18 @@
+name: /home/s/shreejoy/nxu/miniforge3/envs/patch_seq_spl
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-arrow
+  - r-tidyverse
+  - r-jsonlite
+  - r-languageserver
+  - r-rlang
+  - r-httpgd
+  - bioconductor-rtracklayer
+  - r-reticulate
+  - r-devtools
+  - bioconductor-genomicfeatures
+  - r-reticulate
+  - bioconductor-gviz
+prefix: /home/s/shreejoy/nxu/miniforge3/envs/patch_seq_spl
