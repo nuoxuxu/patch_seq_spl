@@ -116,6 +116,16 @@ def get_interactive_heatmap_(adata, corr_matrix):
         interactive_heatmap.layers[ephys_prop] = np.hstack(psi_list)
     return interactive_heatmap
 
+def save_scatter_plots_per_intron_group(adata, intron_group, ephys_prop, grouped_by_subclass):
+    from pathlib import Path
+    import matplotlib.pyplot as plt
+    gene_name = intron_group.split("_")[0]
+    plot_intron_group_vs_ephys_prop(adata, intron_group, ephys_prop, grouped_by_subclass)
+    save_path = Path(f"proc/figures/{gene_name}/scatter_plots")
+    if not save_path.exists():
+        save_path.mkdir(parents=True)
+    plt.savefig(save_path / f"{intron_group}_{ephys_prop}.png")
+
 def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value"):
     """
     Get p-values or effect sizes from likelihood ratio test
@@ -292,24 +302,31 @@ def plot_scatter_per_intron(adata, intron, ephys_prop):
     ax.set_ylabel(intron)
     return fig
 
-def plot_intron_group_vs_ephys_prop(adata, intron_group, ephys_prop):
+def plot_intron_group_vs_ephys_prop(adata, intron_group, ephys_prop, grouped_by_subclass):
+    import seaborn as sns
     import matplotlib.pyplot as plt
+
+    assert adata.obsm.__contains__("predictors") == True
+    
     intron_arr = adata[:, adata.var["intron_group"] == intron_group].X.toarray()
     cells_to_use = np.where(intron_arr.sum(axis=1) > 0)[0]
     with np.errstate(divide='ignore', invalid='ignore'):
         PSI = intron_arr / intron_arr.sum(axis=1)[:, None]
     PSI = PSI[cells_to_use]
-    ephys_prop_arr = adata.obsm[ephys_prop]
-    ephys_prop_arr = ephys_prop_arr[cells_to_use]
+    n_classes = PSI.shape[1]
 
-    fig, axs = plt.subplots(1, 5, figsize=(2+5*5, 5), sharey = True)
+    ephys_prop_arr = adata.obsm["predictors"][[ephys_prop, "subclass"]]
+    ephys_prop_arr = ephys_prop_arr.iloc[cells_to_use]
+    fig, axs = plt.subplots(1, n_classes, figsize=(2+5*n_classes, 4), sharey = True)
 
     for i, ax in enumerate(axs):
         ax.set_xlabel("PSI")
         ax.set_ylabel(ephys_prop)
         ax.set_title(f"{intron_group} vs {ephys_prop}")
-        ax.scatter(PSI[:, i], ephys_prop_arr, marker="o", color="black", s = 5)
-    # return ax.scatter(PSI, ephys_prop_arr, marker="o", color="black", s = 5)  
+        if grouped_by_subclass == True:
+            sns.scatterplot(x=PSI[:, i], y=ephys_prop_arr[ephys_prop], hue=ephys_prop_arr["subclass"], ax = ax)
+        else:
+            ax.scatter(PSI[:, i], ephys_prop_arr[ephys_prop].to_numpy(), marker="o", color="black", s = 5)
 
 def add_gene_annotation(features, gtf_path, filter_unique_gene=True):
     import warnings
