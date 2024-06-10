@@ -143,7 +143,6 @@ plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRU
     }
 }
 
-src <- reticulate::import("patch_seq_spl.helper_functions")
 sig_VGIC_SJ <- read.csv("sig_VGIC_SJ.csv")
 intron_group_list <- sig_VGIC_SJ$event_name
 gene_name_list <- sapply(str_split(intron_group_list, "_"), `[`, 1)
@@ -151,14 +150,13 @@ intron_by_gene_name <- split(intron_group_list, gene_name_list)
 
 plot_per_gene <- function(x, adjacent_only = TRUE, focus = TRUE) {
     gene_name <- str_split(unname(x[1]), "_")[[1]][1]
-    path <- glue("proc/figures/{gene_name}/transcript_viz")
-    if (!dir.exists(path)) {
-    dir.create(path, recursive = TRUE)
-    }
-
     for (intron in x) {
-    plot_intron_group(intron, adjacent_only = adjacent_only, focus = focus)
-    ggsave(glue("proc/figures/{gene_name}/transcript_viz/{intron}.png"))
+        path <- glue("proc/figures/{gene_name}/{intron}")
+        if (!dir.exists(path)) {
+            dir.create(path, recursive = TRUE)
+        }
+        plot_intron_group(intron, adjacent_only = adjacent_only, focus = focus)
+        ggsave(glue("proc/figures/{gene_name}/{intron}/transcript_viz.png"))
     }
 }
 lapply(intron_by_gene_name, plot_per_gene)

@@ -285,7 +285,7 @@ def save_scatter_plots_per_intron_group(adata, intron_group, ephys_prop, grouped
     import matplotlib.pyplot as plt
     gene_name = intron_group.split("_")[0]
     plot_intron_group_vs_ephys_prop(adata, intron_group, ephys_prop, grouped_by_subclass)
-    save_path = Path(f"proc/figures/{gene_name}/scatter_plots")
+    save_path = Path(f"proc/figures/{gene_name}/{intron_group}")
     if not save_path.exists():
         save_path.mkdir(parents=True)
-    plt.savefig(save_path / f"{intron_group}_{ephys_prop}.png")
+    plt.savefig(save_path / f"{ephys_prop}.png")
