@@ -1,6 +1,65 @@
 import numpy as np
 import pandas as pd
 from typing import Literal
+
+@pd.api.extensions.register_dataframe_accessor("glm")
+class GLMAccessor:
+    def __init__(self, pandas_obj):
+        self._validate(pandas_obj)
+        self._obj = pandas_obj
+
+    @staticmethod
+    def _validate(obj):
+        if not isinstance(obj, pd.DataFrame):
+            raise AttributeError("Must be a DataFrame")
+    
+    VGIC_LGIC = np.load("data/VGIC_LGIC.npy", allow_pickle=True)
+
+    @staticmethod
+    def get_gene_names(obj) -> list:
+        return obj.index.str.split("_", expand=True).get_level_values(0).tolist()
+    
+    @staticmethod
+    def get_VGIC_idx(obj) -> np.ndarray:
+        """
+        Get the indices of VGIC genes in the gene list
+
+        Args:
+            gene_list: list of gene names
+
+        Returns:
+            list of indices of VGIC genes in the gene list
+        """        
+        gene_names = GLMAccessor.get_gene_names(obj)
+        return np.flatnonzero(pd.Series(gene_names).isin(GLMAccessor.VGIC_LGIC))
+    
+    def rank_introns_by_n_sig_corr(self, rank_by: str, VGIC_only: bool, sig_only: bool) -> pd.DataFrame:
+        if VGIC_only:
+            temp = self._obj.iloc[self.get_VGIC_idx(self._obj), :]
+        else:
+            temp = self._obj
+        if rank_by == "all":
+            p_value_matrix = temp.loc[temp.apply(lambda x: (x < 0.05)).sum(axis = 1).sort_values(ascending = False).index]
+            if sig_only:
+                return p_value_matrix.loc[p_value_matrix.apply(lambda x: (x < 0.05)).sum(axis=1) > 0]
+            else:
+                return p_value_matrix
+        else:
+            p_value_matrix = temp.loc[temp[rank_by].abs().sort_values(ascending = True).index]
+            if sig_only:
+                return p_value_matrix.loc[p_value_matrix[rank_by].apply(lambda x: (x < 0.05))]
+            else:
+                return p_value_matrix
+    
+    def get_sig_gene_list(self, predictor: str, VGIC_only: bool) -> list:
+        sig_glm_results = self._obj.loc[self._obj[predictor] < 0.05, predictor]
+        if VGIC_only:
+            gene_names = self.get_gene_names(sig_glm_results)
+            return list(set(gene_names).intersection(GLMAccessor.VGIC_LGIC))
+        else:
+            gene_names = self.get_gene_names(sig_glm_results)
+            return list(set(gene_names))
+
 ###################################################
 # [1] AnnData utilities
 ###################################################
@@ -88,7 +147,8 @@ def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value")
     import dask.dataframe as dd
     import pandas as pd
     from pathlib import Path
-    from statsmodels.stats.multitest import fdrcorrection    
+    from statsmodels.stats.multitest import fdrcorrection
+
     glm_results = dd.read_csv([path for path in Path(path).iterdir()], include_path_column = True)\
         .pivot_table(index = "event_name", columns = "path", values = key).compute()
     glm_results.rename(columns = {path: Path(path).stem for path in glm_results.columns}, inplace = True)
@@ -109,55 +169,6 @@ def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value")
         glm_results = glm_results.set_index("gene_name")
 
     return glm_results
-
-def rank_introns_by_n_sig_corr(glm_results, rank_by):
-    '''
-    Rank introns by the number of significant correlations
-
-    Args:
-        glm_results: pd.DataFrame
-            glm_results
-        rank_by: str
-            column to rank by
-            "all" would rank by the sum of significant correlations across columns
-        top: int or "all"
-    
-    Returns:
-        pd.DataFrame
-            p_value_matrix
-    '''
-    if rank_by == "all":
-        p_value_matrix = glm_results.loc[glm_results.apply(lambda x: (x < 0.05)).sum(axis = 1).sort_values(ascending = False).index]
-    else:
-        p_value_matrix = glm_results.loc[glm_results[rank_by].abs().sort_values(ascending = True).index]
-    
-    return p_value_matrix
-
-def get_sig_gene_list(glm_results, predictor):
-    intron_group_list = glm_results.loc[glm_results[predictor] < 0.05, predictor].index.to_list()
-    gene_names = get_gene_from_intron_group(intron_group_list)
-    return list(set(gene_names))
-
-def get_gene_from_intron_group(intron_group_list):
-    if isinstance(intron_group_list, pd.core.indexes.base.Index):
-        return intron_group_list.str.split("_", expand=True).get_level_values(0).tolist()
-    else:
-        return [x.split("_")[0] for x in intron_group_list]
-
-def get_VGIC_idx(gene_list):
-    """
-    Get the indices of VGIC genes in the gene list
-
-    Args:
-        gene_list: list of gene names
-
-    Returns:
-        list of indices of VGIC genes in the gene list
-    """
-    VGIC_LGIC = np.load("data/VGIC_LGIC.npy", allow_pickle=True)
-    if isinstance(gene_list, list) or isinstance(gene_list, np.ndarray):
-        gene_list = pd.Series(gene_list) 
-    return np.flatnonzero(gene_list.isin(VGIC_LGIC))
         
 ###################################################
 # [2] Plotting utilities
@@ -172,10 +183,8 @@ def plot_glm_results(glm_results, rank_by = "all", top = 100, vmin = 0, vmax = 1
     prop_names = json.load(open("data/mappings/prop_names.json", "r"))
     
     glm_results = glm_results.replace(0, np.nan)
-    p_value_matrix = rank_introns_by_n_sig_corr(glm_results, rank_by = rank_by)[:top]
-
-    gene_names = get_gene_from_intron_group(p_value_matrix.index)
-    IC_idx = get_VGIC_idx(gene_names)
+    p_value_matrix = glm_results.glm.rank_introns_by_n_sig_corr(rank_by="all", VGIC_only=False, sig_only=True)[:top]
+    IC_idx = p_value_matrix.glm.get_VGIC_idx(p_value_matrix)
 
     # Plotting parameters
     cmap = "Reds"
