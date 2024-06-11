@@ -177,7 +177,24 @@ class IPFXAccessor:
         out = out.loc[:, out.columns.notnull()]
         return out
 
-    def plot_ephys_traces(self, cell_type_1, cell_type_2, window = 500):
+    def plot_ephys_traces(self, cell_type_1: str, cell_type_2: str, window: int = 500):
+        """
+        Plot overlayed ephys traces of two cell types
+
+        Args:
+            cell_type_1: str
+                cell type 1
+            cell_type_2: str
+                cell type 2
+            window: int
+                window size
+
+        Returns:
+            fig: matplotlib.pyplot.figure
+                figure object
+            ax: matplotlib.pyplot.axis
+                axis object
+        """
         import matplotlib.pyplot as plt
 
         arr_1 = self.colnames_to_cell_types(self._obj)[cell_type_1].values[:window, :]
@@ -195,8 +212,15 @@ class IPFXAccessor:
         ax.yaxis.set_label_text("Voltage (mV)")    
     
 class ExtendedAnnData(anndata.AnnData):
-    def __init__(self, adata):
+    def __init__(self, adata, ggtranscript = False):
         super().__init__(adata.X, obs=adata.obs, var=adata.var, obsm=adata.obsm, varm=adata.varm)
+        if ggtranscript:
+            self.load_data_ggtranscript()
+
+    def load_data_ggtranscript(adata):
+        from utility.ryp import r, to_r
+        to_r(adata.var, "sig_intron_attr")
+        r("source('scripts/transcript_viz.r')")
 
     def filter_adata(self, params):
         import scquint.data as sd
@@ -291,7 +315,7 @@ class ExtendedAnnData(anndata.AnnData):
             index = pd.factorize(self.obs.index.map(transcriptomic_id_cell_type))[1],
             columns = self.var_names)
 
-    def plot_SJ_prop(self, intron_group, ephys_prop, grouped_by_subclass):
+    def plot_SJ_prop_sc(self, intron_group, ephys_prop, grouped_by_subclass):
         import seaborn as sns
         import matplotlib.pyplot as plt
 
@@ -322,13 +346,13 @@ class ExtendedAnnData(anndata.AnnData):
         import matplotlib.pyplot as plt
         
         gene_name = intron_group.split("_")[0]
-        self.plot_SJ_prop(intron_group, ephys_prop, grouped_by_subclass)
+        self.plot_SJ_prop_sc(intron_group, ephys_prop, grouped_by_subclass)
         save_path = Path(f"proc/figures/{gene_name}/{intron_group}")
         if not save_path.exists():
             save_path.mkdir(parents=True)
         plt.savefig(save_path / f"{ephys_prop}.png")    
     
-    def plot_SJ_prop_ttype(self, intron_group, ephys_prop):
+    def plot_SJ_prop_sc_ttype(self, intron_group, ephys_prop):
         import plotly.express as px
         import matplotlib.pyplot as plt
 
@@ -345,15 +369,20 @@ class ExtendedAnnData(anndata.AnnData):
 
         n_classes = ttype_by_SJ_arr.shape[1]
 
-        df_for_plotting = pd.DataFrame(ttype_by_SJ_arr, index = ttype_by_SJ.index, columns = ttype_by_SJ.columns[SJ_idx])\
+        df_for_plotting = pd.DataFrame(ttype_by_SJ_arr, index = ttype_by_SJ.index)\
             .assign(ephys_prop = ttype_by_prop[ephys_prop].values)\
             .reset_index()\
             .melt(id_vars=["ephys_prop", "index"], var_name="SJ_idx")
 
         return px.scatter(df_for_plotting,
                           x="value", y="ephys_prop", facet_col="SJ_idx", 
-                          hover_name = df_for_plotting["index"])
+                          hover_name = df_for_plotting["index"], 
+                          labels = {"value": "PSI", "ephys_prop": ephys_prop})
         
+    def plot_ggtranscript(self, intron_group):
+        from utility.ryp import r, to_r
+        r(f"plot_intron_group('{intron_group}')")
+
 def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value"):
     """
     Get p-values or effect sizes from likelihood ratio test

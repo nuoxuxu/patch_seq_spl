@@ -1,25 +1,30 @@
-library(ggtranscript)
-library(magrittr)
-library(tidyverse)
-library(ggplot2)
-library(rtracklayer)
-library(reticulate)
-library(stringr)
-library(glue)
+suppressMessages(
+    {
+        library(ggtranscript)
+        library(magrittr)
+        library(tidyverse)
+        library(ggplot2)
+        library(rtracklayer)
+        library(reticulate)
+        library(stringr)
+        library(glue)
+    }
+)
 
-GENOMIC_DATA_DIR <- "/Users/xunuo/Genomic_references"
-gtf_path <- paste0(GENOMIC_DATA_DIR, "/Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.110.gtf")
-annotation_from_gtf <- rtracklayer::import(gtf_path)
-annotation_from_gtf <- subset(annotation_from_gtf, mcols(annotation_from_gtf)$type %in% c("exon", "CDS"))
-annotation_from_gtf <- annotation_from_gtf[mcols(annotation_from_gtf)$transcript_name %>% complete.cases(), ]
+get_annotation_from_gtf <- function(gtf_path) {
+    annotation_from_gtf <- rtracklayer::import(gtf_path)
+    annotation_from_gtf <- subset(annotation_from_gtf, mcols(annotation_from_gtf)$type %in% c("exon", "CDS"))
+    annotation_from_gtf <- annotation_from_gtf[mcols(annotation_from_gtf)$transcript_name %>% complete.cases(), ]
+    annotation_from_gtf
+}
 
-anndata <- reticulate::import("anndata")
-adata <- anndata$read_h5ad("proc/scquint/preprocessed_adata_three.h5ad")
-sig_intron_attr <- adata$var
-sig_intron_attr <- sig_intron_attr %>%
-    makeGRangesFromDataFrame(keep.extra.columns = TRUE)
-start(sig_intron_attr) <- start(sig_intron_attr) - 1
-end(sig_intron_attr) <- end(sig_intron_attr) + 1
+get_sig_intron_attr <- function(sig_intron_attr) {
+    sig_intron_attr <- sig_intron_attr %>%
+        makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+    start(sig_intron_attr) <- start(sig_intron_attr) - 1
+    end(sig_intron_attr) <- end(sig_intron_attr) + 1
+    sig_intron_attr
+}
 
 findAdjacent <- function(query, subject) {
     if (class(query) == "GRanges" && class(subject) == "CompressedGRangesList") {
@@ -143,11 +148,6 @@ plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRU
     }
 }
 
-sig_VGIC_SJ <- read.csv("sig_VGIC_SJ.csv")
-intron_group_list <- sig_VGIC_SJ$event_name
-gene_name_list <- sapply(str_split(intron_group_list, "_"), `[`, 1)
-intron_by_gene_name <- split(intron_group_list, gene_name_list)
-
 plot_per_gene <- function(x, adjacent_only = TRUE, focus = TRUE) {
     gene_name <- str_split(unname(x[1]), "_")[[1]][1]
     for (intron in x) {
@@ -159,4 +159,15 @@ plot_per_gene <- function(x, adjacent_only = TRUE, focus = TRUE) {
         ggsave(glue("proc/figures/{gene_name}/{intron}/transcript_viz.png"))
     }
 }
-lapply(intron_by_gene_name, plot_per_gene)
+
+# sig_VGIC_SJ <- read.csv("sig_VGIC_SJ.csv")
+# intron_group_list <- sig_VGIC_SJ$event_name
+# gene_name_list <- sapply(str_split(intron_group_list, "_"), `[`, 1)
+# intron_by_gene_name <- split(intron_group_list, gene_name_list)
+# lapply(intron_by_gene_name, plot_per_gene)
+
+GENOMIC_DATA_DIR <- "/Users/xunuo/Genomic_references"
+gtf_path <- paste0(GENOMIC_DATA_DIR, "/Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.110.gtf")
+
+sig_intron_attr <- get_sig_intron_attr(sig_intron_attr)
+annotation_from_gtf <- get_annotation_from_gtf(gtf_path)
