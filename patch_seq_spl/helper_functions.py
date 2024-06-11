@@ -1,6 +1,34 @@
 import numpy as np
 import pandas as pd
 from typing import Literal
+import anndata
+import json
+
+with open("data/mappings/transcriptomic_id_to_specimen_id.json", "r") as f:
+    transcriptomic_id_to_specimen_id = json.load(f)
+
+specimen_id_to_transcriptomic_id = {str(int(key)): value for value, key in transcriptomic_id_to_specimen_id.items()}
+
+with open("data/mappings/transcriptomic_ID_subclass.json", "r") as f:
+    transcriptomic_id_to_subclass = json.load(f)
+
+file_id_to_cell_type = pd.read_csv("data/20200711_patchseq_metadata_mouse.csv")\
+    .set_index("ephys_session_id")\
+    ["T-type Label"].to_dict()
+
+file_name_to_subclass = pd.read_csv("data/2021-09-13_mouse_file_manifest.csv", dtype={"cell_specimen_id": str})\
+    .query("technique == 'intracellular_electrophysiology'")\
+    .assign(transcriptomic_id = lambda x:x["cell_specimen_id"].map(specimen_id_to_transcriptomic_id))\
+    .assign(subclass=lambda x: x["transcriptomic_id"].map(transcriptomic_id_to_subclass))\
+    .dropna(subset=["subclass"])\
+    .set_index("file_name")\
+    ["subclass"].to_dict()
+
+file_name_to_cell_type = pd.read_csv("data/2021-09-13_mouse_file_manifest.csv", dtype={"cell_specimen_id": str})\
+    .query("technique == 'intracellular_electrophysiology'")\
+    .assign(cell_type = lambda x:x["file_id"].map(file_id_to_cell_type))\
+    .set_index("file_name")\
+    ["cell_type"].to_dict()
 
 @pd.api.extensions.register_dataframe_accessor("glm")
 class GLMAccessor:
@@ -59,80 +87,216 @@ class GLMAccessor:
         sig_glm_results = self._obj.loc[self._obj[predictor] < 0.05, predictor]
         if VGIC_only:
             gene_names = self.get_gene_names(sig_glm_results)
-            return list(set(gene_names).intersection(GLMAccessor.VGIC_LGIC))
+            return list(set(gene_names).intersection(self.VGIC_LGIC))
         else:
             gene_names = self.get_gene_names(sig_glm_results)
             return list(set(gene_names))
 
-###################################################
-# [1] AnnData utilities
-###################################################
+    def plot_heatmap(self, rank_by = "all", top = 100, vmin = 0, vmax = 150, save_path = False):
+        import matplotlib.pyplot as plt
+        import matplotlib as mpl
+        import json
+        import numpy as np
 
-def add_predictors(adata):
-    import json
-    import warnings
-    from sklearn.impute import SimpleImputer
+        prop_names = json.load(open("data/mappings/prop_names.json", "r"))
+        
+        p_value_matrix = self._obj.replace(0, np.nan)
+        p_value_matrix = p_value_matrix[:top]
+        IC_idx = self.get_VGIC_idx(p_value_matrix)
 
-    ephys_data_path = "data/ephys_data_sc.csv"
-    transcriptomic_ID_subclass_path = "data/mappings/transcriptomic_ID_subclass.json"
-    with open(transcriptomic_ID_subclass_path, "r") as f:
-        transcriptomic_ID_subclass = json.load(f)
-    transcriptomic_id_to_specimen_id_path = "data/mappings/transcriptomic_id_to_specimen_id.json"
-    metadata_path = "data/20200711_patchseq_metadata_mouse.csv"    
+        # Plotting parameters
+        cmap = "Reds"
+        colorbar_label = "-log10(p-value)"
+        textcolors=("black", "white")
+        kw = dict(horizontalalignment="center", verticalalignment="center")
 
-    ephys_data = pd.read_csv(ephys_data_path, index_col = 0)
-    ephys_data = ephys_data.loc[(np.isnan(ephys_data)).sum(axis = 1) < 6, :]
-    print("Removing cells with more than 6 missing ephys properties")
-    imp = SimpleImputer(missing_values=np.nan, strategy='mean')
-    ephys_data = pd.DataFrame(imp.fit_transform(ephys_data), index=ephys_data.index, columns=ephys_data.columns)
-    print("Imputing the rest of the missing ephys values with mean")
+        # Create the figure
+        fig, axs = plt.subplots(figsize=(10, 1+5*(top/25)), 
+                                sharey=True,
+                                constrained_layout=True)
 
-    # keep only cells that are in both adata and ephys_data    
-    adata_out = adata.copy()
-    common_IDs = np.intersect1d(adata_out.obs_names, ephys_data.index)
-    adata_out = adata_out[common_IDs, :]
-    ephys_data = ephys_data.loc[common_IDs]
+        # Plot the first axes (ephys_props)
+        im = axs.imshow(-np.log10(p_value_matrix), aspect="auto", cmap = cmap, vmin = vmin, vmax = vmax)
+        axs.set_xticks(np.arange(len(p_value_matrix.columns)))
+        axs.set_yticks(np.arange(len(p_value_matrix.index)))
+        axs.set_xticklabels(p_value_matrix.columns.map(prop_names), rotation=45, ha='right', fontsize = 13)
 
-    # Add subclass labels to ephys data
-    ephys_data = ephys_data.assign(subclass = ephys_data.index.map(transcriptomic_ID_subclass)).dropna()
+        yticklabels = p_value_matrix.index.to_list()
+        y_labels = axs.get_yticklabels()
+        for i in IC_idx:
+            y_labels[i].set_color("red")
+        axs.set_yticklabels(yticklabels)
 
-    # Add cpms to ephys data
-    cpm_path = "data/20200513_Mouse_PatchSeq_Release_cpm.v2.csv"
-    transcriptomics_sample_id_file_name_path = "data/mappings/transcriptomics_sample_id_file_name.json"
-    transcriptomics_sample_id_file_name = json.load(open(transcriptomics_sample_id_file_name_path, "r"))        
-    cpm = pd.read_csv(cpm_path, index_col=0)
+        fdr = np.vectorize({True: "*", False: " "}.get)(p_value_matrix< 0.05)
+        texts = []
+        for i in range(fdr.shape[0]):
+            for j in range(fdr.shape[1]):
+                kw.update(color=textcolors[int(im.norm(p_value_matrix.iloc[i, j]) > 0)])
+                text = im.axes.text(j, i, fdr[i, j], **kw)
+                texts.append(text) 
+                
+        fig.colorbar(mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(vmin = vmin, vmax = vmax), 
+                    cmap=cmap), ax=axs, shrink=0.4, aspect = 25, location = "top", 
+                    pad = 0.01, label = colorbar_label)
 
-    cpm = cpm.loc[cpm.index.isin(adata_out.var.gene_name.values.categories), :]
-    cpm = cpm.T
-    cpm.index = cpm.index.map(transcriptomics_sample_id_file_name)
+        if save_path:
+            plt.savefig(save_path)
 
-    ephys_data = pd.concat([ephys_data, cpm.loc[ephys_data[ephys_data.index.isin(cpm.index)].index, :]], axis = 1).dropna()
-    adata_out = adata_out[ephys_data.index, :]
+@pd.api.extensions.register_dataframe_accessor("ipfx")
+class IPFXAccessor:
+    def __init__(self, pandas_obj):
+        self._validate(pandas_obj)
+        self._obj = pandas_obj
 
-    # Add soma depth to ephys data
-    with open(transcriptomic_id_to_specimen_id_path, "r") as f:
-        transcriptomic_id_to_specimen_id = json.load(f)
-    metadata = pd.read_csv(metadata_path)
+    @staticmethod
+    def _validate(obj):
+        if not isinstance(obj, pd.DataFrame):
+            raise AttributeError("Must be a DataFrame")
 
-    specimen_id_to_transcriptomic_id = {v: k for k, v in transcriptomic_id_to_specimen_id.items()} 
-    metadata = metadata.loc[~metadata["cell_soma_normalized_depth"].isna()]
-    metadata["cell_specimen_id"] = metadata["cell_specimen_id"].map(specimen_id_to_transcriptomic_id)
-    cell_soma_normalized_depth = metadata.dropna(subset=["cell_specimen_id"]).set_index("cell_specimen_id")["cell_soma_normalized_depth"]    
+    @staticmethod
+    def colnames_to_subclass(obj):
+        out = obj.copy()
+        out.columns = out.columns.map(file_name_to_subclass)
+        out = out.loc[:, out.columns.notnull()]
+        return out
+    
+    @staticmethod
+    def colnames_to_cell_types(obj):
+        out = obj.copy()
+        out.columns = out.columns.map(file_name_to_cell_type)
+        out = out.loc[:, out.columns.notnull()]
+        return out
 
-    ephys_data = ephys_data.assign(soma_depth = ephys_data.index.map(cell_soma_normalized_depth.to_dict()))
+    def plot_ephys_traces(self, cell_type_1, cell_type_2, window = 500):
+        import matplotlib.pyplot as plt
 
-    for subclass in ephys_data["subclass"].unique():
-        ephys_data[subclass] = ephys_data["subclass"] == subclass
+        arr_1 = self.colnames_to_cell_types(self._obj)[cell_type_1].values[:window, :]
+        arr_2 = self.colnames_to_cell_types(self._obj)[cell_type_2].values[:window, :]
 
-    adata_out.obsm["predictors"] = ephys_data
-    return adata_out
+        fig, ax = plt.subplots()
+        for i in range(arr_1.shape[1]):
+            ax.plot(arr_1[:, i], color = "blue", alpha = 0.1)
+        for i in range(arr_2.shape[1]):
+            ax.plot(arr_2[:, i], color = "red", alpha = 0.1)
+        leg = ax.legend([cell_type_1, cell_type_2]) 
+        leg.legend_handles[0].set_color('blue')
+        leg.legend_handles[1].set_color('red')
+        ax.xaxis.set_label_text("Time (ms)")
+        ax.yaxis.set_label_text("Voltage (mV)")    
+    
+class ExtendedAnnData(anndata.AnnData):
+    def __init__(self, adata):
+        super().__init__(adata.X, obs=adata.obs, var=adata.var)
 
-def update_intron_group_size(adata):
-    intron_group_size = adata.var.groupby("intron_group", observed=True).count()["start"].to_frame().rename(columns={"start": "intron_group_size"})
-    adata.var = pd.merge(adata.var, intron_group_size, how="left", on="intron_group")\
-        .drop(columns="intron_group_size_x").rename(columns={"intron_group_size_y": "intron_group_size"})    
-    return adata
+    def filter_adata(self, params):
+        import scquint.data as sd
+        min_global_SJ_counts, min_cells_per_feature, min_cells_per_intron_group = params
 
+        self = sd.filter_min_global_SJ_counts(self, min_global_SJ_counts)
+        self = sd.filter_min_cells_per_feature(self, min_cells_per_feature)
+        self = sd.filter_min_cells_per_intron_group(self, min_cells_per_intron_group)
+        return ExtendedAnnData(self)
+
+    def update_intron_group_size(self):
+        intron_group_size = self.var.groupby("intron_group", observed=True).count()["start"].to_frame().rename(columns={"start": "intron_group_size"})
+        self.var = pd.merge(self.var, intron_group_size, how="left", on="intron_group")\
+            .drop(columns="intron_group_size_x").rename(columns={"intron_group_size_y": "intron_group_size"})    
+        return self    
+    
+    def add_predictors(self):
+        import json
+        import warnings
+        from sklearn.impute import SimpleImputer
+
+        ephys_data_path = "data/ephys_data_sc.csv"
+        transcriptomic_ID_subclass_path = "data/mappings/transcriptomic_ID_subclass.json"
+        with open(transcriptomic_ID_subclass_path, "r") as f:
+            transcriptomic_ID_subclass = json.load(f)
+        transcriptomic_id_to_specimen_id_path = "data/mappings/transcriptomic_id_to_specimen_id.json"
+        metadata_path = "data/20200711_patchseq_metadata_mouse.csv"    
+
+        ephys_data = pd.read_csv(ephys_data_path, index_col = 0)
+        ephys_data = ephys_data.loc[(np.isnan(ephys_data)).sum(axis = 1) < 6, :]
+        print("Removing cells with more than 6 missing ephys properties")
+        imp = SimpleImputer(missing_values=np.nan, strategy='mean')
+        ephys_data = pd.DataFrame(imp.fit_transform(ephys_data), index=ephys_data.index, columns=ephys_data.columns)
+        print("Imputing the rest of the missing ephys values with mean")
+
+        # keep only cells that are in both adata and ephys_data    
+        common_IDs = np.intersect1d(self.obs_names, ephys_data.index)
+        self = self[common_IDs, :]
+        ephys_data = ephys_data.loc[common_IDs]
+
+        # Add subclass labels to ephys data
+        ephys_data = ephys_data.assign(subclass = ephys_data.index.map(transcriptomic_ID_subclass)).dropna()
+
+        # Add cpms to ephys data
+        cpm_path = "data/20200513_Mouse_PatchSeq_Release_cpm.v2.csv"
+        transcriptomics_sample_id_file_name_path = "data/mappings/transcriptomics_sample_id_file_name.json"
+        transcriptomics_sample_id_file_name = json.load(open(transcriptomics_sample_id_file_name_path, "r"))        
+        cpm = pd.read_csv(cpm_path, index_col=0)
+
+        cpm = cpm.loc[cpm.index.isin(self.var.gene_name.values.categories), :]
+        cpm = cpm.T
+        cpm.index = cpm.index.map(transcriptomics_sample_id_file_name)
+
+        ephys_data = pd.concat([ephys_data, cpm.loc[ephys_data[ephys_data.index.isin(cpm.index)].index, :]], axis = 1).dropna()
+        self = self[ephys_data.index, :]
+
+        # Add soma depth to ephys data
+        with open(transcriptomic_id_to_specimen_id_path, "r") as f:
+            transcriptomic_id_to_specimen_id = json.load(f)
+        metadata = pd.read_csv(metadata_path)
+
+        specimen_id_to_transcriptomic_id = {v: k for k, v in transcriptomic_id_to_specimen_id.items()} 
+        metadata = metadata.loc[~metadata["cell_soma_normalized_depth"].isna()]
+        metadata["cell_specimen_id"] = metadata["cell_specimen_id"].map(specimen_id_to_transcriptomic_id)
+        cell_soma_normalized_depth = metadata.dropna(subset=["cell_specimen_id"]).set_index("cell_specimen_id")["cell_soma_normalized_depth"]    
+
+        ephys_data = ephys_data.assign(soma_depth = ephys_data.index.map(cell_soma_normalized_depth.to_dict()))
+
+        for subclass in ephys_data["subclass"].unique():
+            ephys_data[subclass] = ephys_data["subclass"] == subclass
+
+        self.obsm["predictors"] = ephys_data
+        return self
+
+    def plot_intron_group_vs_ephys_prop(self, intron_group, ephys_prop, grouped_by_subclass):
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+
+        assert self.obsm.__contains__("predictors") == True
+        
+        intron_arr = self[:, self.var["intron_group"] == intron_group].X.toarray()
+        cells_to_use = np.where(intron_arr.sum(axis=1) > 0)[0]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            PSI = intron_arr / intron_arr.sum(axis=1)[:, None]
+        PSI = PSI[cells_to_use]
+        n_classes = PSI.shape[1]
+
+        ephys_prop_arr = self.obsm["predictors"][[ephys_prop, "subclass"]]
+        ephys_prop_arr = ephys_prop_arr.iloc[cells_to_use]
+        fig, axs = plt.subplots(1, n_classes, figsize=(2+5*n_classes, 4), sharey = True)
+
+        for i, ax in enumerate(axs):
+            ax.set_xlabel("PSI")
+            ax.set_ylabel(ephys_prop)
+            ax.set_title(f"{intron_group} vs {ephys_prop}")
+            if grouped_by_subclass == True:
+                sns.scatterplot(x=PSI[:, i], y=ephys_prop_arr[ephys_prop], hue=ephys_prop_arr["subclass"], ax = ax)
+            else:
+                ax.scatter(PSI[:, i], ephys_prop_arr[ephys_prop].to_numpy(), marker="o", color="black", s = 5)
+
+    def save_scatter_plots_per_intron_group(self, intron_group, ephys_prop, grouped_by_subclass):
+        from pathlib import Path
+        import matplotlib.pyplot as plt
+        gene_name = intron_group.split("_")[0]
+        self.plot_intron_group_vs_ephys_prop(intron_group, ephys_prop, grouped_by_subclass)
+        save_path = Path(f"proc/figures/{gene_name}/{intron_group}")
+        if not save_path.exists():
+            save_path.mkdir(parents=True)
+        plt.savefig(save_path / f"{ephys_prop}.png")    
+    
 def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value"):
     """
     Get p-values or effect sizes from likelihood ratio test
@@ -173,123 +337,3 @@ def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value")
         glm_results = glm_results.set_index("gene_name")
 
     return glm_results
-        
-###################################################
-# [2] Plotting utilities
-###################################################
-
-def plot_glm_results(glm_results, rank_by = "all", top = 100, vmin = 0, vmax = 150, save_path = False):
-    import matplotlib.pyplot as plt
-    import matplotlib as mpl
-    import json
-    import numpy as np
-
-    prop_names = json.load(open("data/mappings/prop_names.json", "r"))
-    
-    glm_results = glm_results.replace(0, np.nan)
-    p_value_matrix = glm_results.glm.rank_introns_by_n_sig_corr(rank_by="all", VGIC_only=False, sig_only=True)[:top]
-    IC_idx = p_value_matrix.glm.get_VGIC_idx(p_value_matrix)
-
-    # Plotting parameters
-    cmap = "Reds"
-    colorbar_label = "-log10(p-value)"
-    textcolors=("black", "white")
-    kw = dict(horizontalalignment="center", verticalalignment="center")
-
-    # Create the figure
-    fig, axs = plt.subplots(figsize=(10, 1+5*(top/25)), 
-                            sharey=True,
-                            constrained_layout=True)
-
-    # Plot the first axes (ephys_props)
-    im = axs.imshow(-np.log10(p_value_matrix), aspect="auto", cmap = cmap, vmin = vmin, vmax = vmax)
-    axs.set_xticks(np.arange(len(p_value_matrix.columns)))
-    axs.set_yticks(np.arange(len(p_value_matrix.index)))
-    axs.set_xticklabels(p_value_matrix.columns.map(prop_names), rotation=45, ha='right', fontsize = 13)
-
-    yticklabels = p_value_matrix.index.to_list()
-    y_labels = axs.get_yticklabels()
-    for i in IC_idx:
-        y_labels[i].set_color("red")
-    axs.set_yticklabels(yticklabels)
-
-    fdr = np.vectorize({True: "*", False: " "}.get)(p_value_matrix< 0.05)
-    texts = []
-    for i in range(fdr.shape[0]):
-        for j in range(fdr.shape[1]):
-            kw.update(color=textcolors[int(im.norm(p_value_matrix.iloc[i, j]) > 0)])
-            text = im.axes.text(j, i, fdr[i, j], **kw)
-            texts.append(text) 
-            
-    fig.colorbar(mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(vmin = vmin, vmax = vmax), 
-                cmap=cmap), ax=axs, shrink=0.4, aspect = 25, location = "top", 
-                pad = 0.01, label = colorbar_label)
-
-    if save_path:
-        plt.savefig(save_path)
-
-def plot_scatter_per_intron(adata, intron, ephys_prop):
-    '''
-    Plot scatter plot of ephys property vs PSI for a given intron
-
-    Args:
-        adata: anndata object
-        intron: intron name
-        ephys_prop: ephys property name 
-
-    Returns:
-        fig: a matplotlib figure object
-    '''
-    import matplotlib.pyplot as plt
-    temp = adata.obs.index.to_series()\
-        .str.split(" ", n = 1, expand = True)[0]\
-        .reset_index(drop = True)
-    temp = temp.groupby(temp).apply(lambda x: x.index.tolist()).to_dict()
-    fig, ax  = plt.subplots()
-    for subclass in temp:
-        ax.plot(
-            adata[temp[subclass], :].obs[ephys_prop],
-            adata[temp[subclass], intron].layers["PSI"].mean(axis = 1),
-            'o',
-            label = subclass
-        )
-    fig.legend()
-    ax.set_xlabel(ephys_prop)
-    ax.set_ylabel(intron)
-    return fig
-
-def plot_intron_group_vs_ephys_prop(adata, intron_group, ephys_prop, grouped_by_subclass):
-    import seaborn as sns
-    import matplotlib.pyplot as plt
-
-    assert adata.obsm.__contains__("predictors") == True
-    
-    intron_arr = adata[:, adata.var["intron_group"] == intron_group].X.toarray()
-    cells_to_use = np.where(intron_arr.sum(axis=1) > 0)[0]
-    with np.errstate(divide='ignore', invalid='ignore'):
-        PSI = intron_arr / intron_arr.sum(axis=1)[:, None]
-    PSI = PSI[cells_to_use]
-    n_classes = PSI.shape[1]
-
-    ephys_prop_arr = adata.obsm["predictors"][[ephys_prop, "subclass"]]
-    ephys_prop_arr = ephys_prop_arr.iloc[cells_to_use]
-    fig, axs = plt.subplots(1, n_classes, figsize=(2+5*n_classes, 4), sharey = True)
-
-    for i, ax in enumerate(axs):
-        ax.set_xlabel("PSI")
-        ax.set_ylabel(ephys_prop)
-        ax.set_title(f"{intron_group} vs {ephys_prop}")
-        if grouped_by_subclass == True:
-            sns.scatterplot(x=PSI[:, i], y=ephys_prop_arr[ephys_prop], hue=ephys_prop_arr["subclass"], ax = ax)
-        else:
-            ax.scatter(PSI[:, i], ephys_prop_arr[ephys_prop].to_numpy(), marker="o", color="black", s = 5)
-
-def save_scatter_plots_per_intron_group(adata, intron_group, ephys_prop, grouped_by_subclass):
-    from pathlib import Path
-    import matplotlib.pyplot as plt
-    gene_name = intron_group.split("_")[0]
-    plot_intron_group_vs_ephys_prop(adata, intron_group, ephys_prop, grouped_by_subclass)
-    save_path = Path(f"proc/figures/{gene_name}/{intron_group}")
-    if not save_path.exists():
-        save_path.mkdir(parents=True)
-    plt.savefig(save_path / f"{ephys_prop}.png")
