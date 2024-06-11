@@ -4,13 +4,23 @@ from typing import Literal
 import anndata
 import json
 
-with open("data/mappings/transcriptomic_id_to_specimen_id.json", "r") as f:
-    transcriptomic_id_to_specimen_id = json.load(f)
-
-specimen_id_to_transcriptomic_id = {str(int(key)): value for value, key in transcriptomic_id_to_specimen_id.items()}
+metadata = pd.read_csv("data/20200711_patchseq_metadata_mouse.csv")
 
 with open("data/mappings/transcriptomic_ID_subclass.json", "r") as f:
     transcriptomic_id_to_subclass = json.load(f)
+
+with open("data/mappings/transcriptomic_id_to_specimen_id.json", "r") as f:
+    transcriptomic_id_to_specimen_id = json.load(f)
+
+with open("data/mappings/transcriptomics_sample_id_file_name.json", "r") as f:
+    sample_id_file_name = json.load(f)
+
+specimen_id_to_transcriptomic_id = {str(int(key)): value for value, key in transcriptomic_id_to_specimen_id.items()}
+
+transcriptomic_id_cell_type = metadata\
+    .assign(file_name = lambda x: x["transcriptomics_sample_id"].map(sample_id_file_name))\
+    .set_index("file_name")\
+    ["T-type Label"].to_dict()
 
 file_id_to_cell_type = pd.read_csv("data/20200711_patchseq_metadata_mouse.csv")\
     .set_index("ephys_session_id")\
@@ -186,7 +196,7 @@ class IPFXAccessor:
     
 class ExtendedAnnData(anndata.AnnData):
     def __init__(self, adata):
-        super().__init__(adata.X, obs=adata.obs, var=adata.var)
+        super().__init__(adata.X, obs=adata.obs, var=adata.var, obsm=adata.obsm, varm=adata.varm)
 
     def filter_adata(self, params):
         import scquint.data as sd
@@ -259,9 +269,29 @@ class ExtendedAnnData(anndata.AnnData):
             ephys_data[subclass] = ephys_data["subclass"] == subclass
 
         self.obsm["predictors"] = ephys_data
-        return self
+        return ExtendedAnnData(self)
 
-    def plot_intron_group_vs_ephys_prop(self, intron_group, ephys_prop, grouped_by_subclass):
+    def get_ttype_by_prop(self):
+        out = self.obsm["predictors"]\
+            .assign(t_type = lambda x: x.index.map(transcriptomic_id_cell_type))\
+            .dropna(subset=["t_type"])\
+            .drop(columns = ['Sst', 'Pvalb', 'Vip', 'Lamp5', 'Sncg', 'Serpinf1', 'subclass'])\
+            .groupby("t_type")\
+            .median()
+        return out
+
+    def get_ttype_by_SJ(self):
+        import numpy_groupies as npg
+        ttype_by_SJ = npg.aggregate(
+            pd.factorize(self.obs.index.map(transcriptomic_id_cell_type))[0], 
+            self.X.toarray(),axis = 0).astype(int)
+
+        return pd.DataFrame(
+            ttype_by_SJ,
+            index = pd.factorize(self.obs.index.map(transcriptomic_id_cell_type))[1],
+            columns = self.var_names)
+
+    def plot_SJ_prop(self, intron_group, ephys_prop, grouped_by_subclass):
         import seaborn as sns
         import matplotlib.pyplot as plt
 
@@ -290,13 +320,40 @@ class ExtendedAnnData(anndata.AnnData):
     def save_scatter_plots_per_intron_group(self, intron_group, ephys_prop, grouped_by_subclass):
         from pathlib import Path
         import matplotlib.pyplot as plt
+        
         gene_name = intron_group.split("_")[0]
-        self.plot_intron_group_vs_ephys_prop(intron_group, ephys_prop, grouped_by_subclass)
+        self.plot_SJ_prop(intron_group, ephys_prop, grouped_by_subclass)
         save_path = Path(f"proc/figures/{gene_name}/{intron_group}")
         if not save_path.exists():
             save_path.mkdir(parents=True)
         plt.savefig(save_path / f"{ephys_prop}.png")    
     
+    def plot_SJ_prop_ttype(self, intron_group, ephys_prop):
+        import plotly.express as px
+        import matplotlib.pyplot as plt
+
+        assert self.obsm.__contains__("predictors") == True
+
+        ttype_by_prop = self.get_ttype_by_prop()
+        ttype_by_SJ = self.get_ttype_by_SJ()
+        
+        SJ_idx = self[:, self.var.intron_group == intron_group].var.index.astype(int)
+        ttype_by_SJ = ttype_by_SJ.iloc[:, SJ_idx]
+
+        with np.errstate(divide='ignore'):
+            ttype_by_SJ_arr = ttype_by_SJ.values / ttype_by_SJ.sum(axis=1).values[:, None]
+
+        n_classes = ttype_by_SJ_arr.shape[1]
+
+        df_for_plotting = pd.DataFrame(ttype_by_SJ_arr, index = ttype_by_SJ.index, columns = ttype_by_SJ.columns[SJ_idx])\
+            .assign(ephys_prop = ttype_by_prop[ephys_prop].values)\
+            .reset_index()\
+            .melt(id_vars=["ephys_prop", "index"], var_name="SJ_idx")
+
+        return px.scatter(df_for_plotting,
+                          x="value", y="ephys_prop", facet_col="SJ_idx", 
+                          hover_name = df_for_plotting["index"])
+        
 def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value"):
     """
     Get p-values or effect sizes from likelihood ratio test
