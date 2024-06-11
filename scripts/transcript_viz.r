@@ -1,11 +1,8 @@
 suppressMessages(
     {
-        library(ggtranscript)
-        library(magrittr)
         library(tidyverse)
         library(ggplot2)
         library(rtracklayer)
-        library(reticulate)
         library(stringr)
         library(glue)
     }
@@ -50,6 +47,7 @@ findAdjacent <- function(query, subject) {
 }
 
 get_base_plot <- function(annodation_gene_name) {
+    library(ggtranscript)
     exons <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "exon") %>%
         as.data.frame()
     cds <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "CDS") %>%
