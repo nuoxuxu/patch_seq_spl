@@ -51,7 +51,7 @@ findAdjacent <- function(query, subject) {
     }
 }
 
-get_exonByTranscript <- function(my_intron_group) {
+get_exonByTranscript <- function(my_intron_group, adjacent_only = TRUE) {
     my_gene_name <- str_split(my_intron_group, "_")[[1]][1]
     annotation_for_gene <- annotation_from_gtf %>%
         subset(mcols(.)$gene_name == my_gene_name)
@@ -70,7 +70,7 @@ get_exonByTranscript <- function(my_intron_group) {
     exonByTranscript[transcripts_to_plot]
 }
 
-get_junctions <- function(my_intron_group) {
+get_junctions <- function(my_intron_group, adjacent_only = TRUE) {
     # exonByTranscript <- get_exonByTranscript(my_intron_group)
     my_gene_name <- str_split(my_intron_group, "_")[[1]][1]
     annotation_for_gene <- annotation_from_gtf %>%
@@ -160,13 +160,19 @@ get_base_plot <- function(annodation_gene_name) {
         )
 }
 
-plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRUE) {
-    exonByTranscript <- get_exonByTranscript(my_intron_group)
-
+plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRUE, transcripts_subset = 0) {
     sig_intron_attr_subset <- sig_intron_attr %>%
         subset(mcols(.)$intron_group == my_intron_group)
 
-    junctions <- get_junctions(my_intron_group)
+    if (type(transcripts_subset) == "double") {
+        exonByTranscript <- get_exonByTranscript(my_intron_group)
+        junctions <- get_junctions(my_intron_group)
+    } else {
+        exonByTranscript <- get_exonByTranscript(my_intron_group) %>%
+            subset(names(.) %in% transcripts_subset)
+        junctions <- get_junctions(my_intron_group) %>%
+            subset(transcript_name %in% transcripts_subset)
+    }
 
     xlim <- get_xlim(sig_intron_attr_subset, exonByTranscript)
 
