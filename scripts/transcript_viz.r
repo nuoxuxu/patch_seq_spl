@@ -17,11 +17,16 @@ get_annotation_from_gtf <- function() {
     annotation_from_gtf
 }
 
-get_sig_intron_attr <- function(sig_intron_attr) {
+get_sig_intron_attr <- function() {
+    # if sig_intron_attr does not exist in the current environment
+    if (!exists("sig_intron_attr")) {
+        sig_intron_attr <- read.csv("proc/scquint/sig_intron_attr.csv")
+    }
     sig_intron_attr <- sig_intron_attr %>%
         makeGRangesFromDataFrame(keep.extra.columns = TRUE)
     start(sig_intron_attr) <- start(sig_intron_attr) - 1
     end(sig_intron_attr) <- end(sig_intron_attr) + 1
+
     sig_intron_attr
 }
 
@@ -46,45 +51,34 @@ findAdjacent <- function(query, subject) {
     }
 }
 
-get_base_plot <- function(annodation_gene_name) {
-    library(ggtranscript)
-    exons <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "exon") %>%
-        as.data.frame()
-    cds <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "CDS") %>%
-        as.data.frame()
-    exons %>%
-        ggplot(
-            aes(
-                xstart = start,
-                xend = end,
-                y = transcript_name
-            ),
-            position_jitter()
-        ) +
-        geom_range(
-            height = 0.25
-        ) +
-        geom_range(
-            data = cds,
-            aes(fill = tag)
-        ) +
-        geom_intron(
-            data = to_intron(exons, "transcript_name"),
-            aes(strand = strand),
-            arrow.min.intron.length = 500
-        )
-}
-
-plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRUE) {
+get_exonByTranscript <- function(my_intron_group) {
     my_gene_name <- str_split(my_intron_group, "_")[[1]][1]
+    annotation_for_gene <- annotation_from_gtf %>%
+        subset(mcols(.)$gene_name == my_gene_name)
+    exonByTranscript <- split(annotation_for_gene, mcols(annotation_for_gene)$transcript_name)
 
     sig_intron_attr_subset <- sig_intron_attr %>%
         subset(mcols(.)$intron_group == my_intron_group)
 
+    if (adjacent_only) {
+        hits <- findAdjacent(sig_intron_attr_subset, exonByTranscript)
+    } else {
+        hits <- findOverlaps(sig_intron_attr_subset, exonByTranscript)
+    }
+
+    transcripts_to_plot <- names(exonByTranscript)[unique(subjectHits(hits))]
+    exonByTranscript[transcripts_to_plot]
+}
+
+get_junctions <- function(my_intron_group) {
+    # exonByTranscript <- get_exonByTranscript(my_intron_group)
+    my_gene_name <- str_split(my_intron_group, "_")[[1]][1]
     annotation_for_gene <- annotation_from_gtf %>%
         subset(mcols(.)$gene_name == my_gene_name)
-
     exonByTranscript <- split(annotation_for_gene, mcols(annotation_for_gene)$transcript_name)
+
+    sig_intron_attr_subset <- sig_intron_attr %>%
+        subset(mcols(.)$intron_group == my_intron_group)
 
     if (adjacent_only) {
         hits <- findAdjacent(sig_intron_attr_subset, exonByTranscript)
@@ -95,10 +89,10 @@ plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRU
     # Get junctions for plotting junctions
     junctions <- as.data.frame(sig_intron_attr_subset)[queryHits(hits), ]
     junctions$transcript_name <- names(exonByTranscript)[subjectHits(hits)]
+    junctions
+}
 
-    transcripts_to_plot <- names(exonByTranscript)[unique(subjectHits(hits))]
-    exonByTranscript <- exonByTranscript[transcripts_to_plot]
-
+get_xlim <- function(sig_intron_attr_subset, exonByTranscript) {
     # Get xmin and xmax for the longest intron
     longest_intron <- sig_intron_attr_subset[which.max(width(sig_intron_attr_subset)), ]
     downstream_exon_idx <- precede(longest_intron, unlist(exonByTranscript), ignore.strand = TRUE)
@@ -134,12 +128,54 @@ plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRU
             xmax <- end(downstream_exon)
         }
     }
+    c(xmin, xmax)
+}
+
+get_base_plot <- function(annodation_gene_name) {
+    library(ggtranscript)
+    exons <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "exon") %>%
+        as.data.frame()
+    cds <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "CDS") %>%
+        as.data.frame()
+    exons %>%
+        ggplot(
+            aes(
+                xstart = start,
+                xend = end,
+                y = transcript_name
+            ),
+            position_jitter()
+        ) +
+        geom_range(
+            height = 0.25
+        ) +
+        geom_range(
+            data = cds,
+            aes(fill = tag)
+        ) +
+        geom_intron(
+            data = to_intron(exons, "transcript_name"),
+            aes(strand = strand),
+            arrow.min.intron.length = 500
+        )
+}
+
+plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRUE) {
+    exonByTranscript <- get_exonByTranscript(my_intron_group)
+
+    sig_intron_attr_subset <- sig_intron_attr %>%
+        subset(mcols(.)$intron_group == my_intron_group)
+
+    junctions <- get_junctions(my_intron_group)
+
+    xlim <- get_xlim(sig_intron_attr_subset, exonByTranscript)
+
     if (focus) {
         exonByTranscript %>%
             unlist(use.names = FALSE) %>%
             get_base_plot() +
             geom_junction(data = junctions, junction.y.max = 0.5) +
-            coord_cartesian(xlim = c(xmin, xmax))
+            coord_cartesian(xlim = xlim)
     } else {
         exonByTranscript %>%
             unlist(use.names = FALSE) %>%
