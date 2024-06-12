@@ -222,6 +222,12 @@ class ExtendedAnnData(anndata.AnnData):
         to_r(adata.var, "sig_intron_attr")
         r("source('scripts/transcript_viz.r')")
 
+        r(
+            """
+            sig_intron_attr <- get_sig_intron_attr(sig_intron_attr)
+            annotation_from_gtf <- get_annotation_from_gtf()
+            """)
+
     def filter_adata(self, params):
         import scquint.data as sd
         min_global_SJ_counts, min_cells_per_feature, min_cells_per_intron_group = params
@@ -380,7 +386,7 @@ class ExtendedAnnData(anndata.AnnData):
                           labels = {"value": "PSI", "ephys_prop": ephys_prop})
         
     def plot_ggtranscript(self, intron_group):
-        from utility.ryp import r, to_r
+        from utility.ryp import r
         r(f"plot_intron_group('{intron_group}')")
 
 def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value"):
