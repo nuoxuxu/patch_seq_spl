@@ -1,7 +1,7 @@
 jobs: 100
 use-conda: true
 default-resources:
-  runtime: "5h"
+  runtime: 120
   nodes: 1
-  mem: "120GB"
-  cpus_per_task: 12
+  mem_mb: 2000
+  cpus_per_task: 1
