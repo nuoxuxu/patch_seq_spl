@@ -1,8 +1,6 @@
 from ipfx.dataset.create import create_ephys_data_set
 from ipfx.utilities import drop_failed_sweeps
 from ipfx.data_set_features import extract_data_set_features
-import pandas as pd
-import matplotlib.pyplot as plt
 from pathlib import Path
 from ipfx.feature_extractor import SpikeFeatureExtractor, SpikeTrainFeatureExtractor
 from ipfx.stimulus_protocol_analysis import LongSquareAnalysis
@@ -29,6 +27,7 @@ def get_rheobase_threshold_idx(dataset):
     sptfx = SpikeTrainFeatureExtractor(start=stim_start_time, end=stim_end_time)
     long_square_analysis = LongSquareAnalysis(spfx, sptfx, subthresh_min_amp=-100.0)
     out = long_square_analysis.analyze(long_square_sweeps)
+    long_square_table = long_square_table.reset_index()
     return out["spikes_set"][long_square_table[long_square_table.sweep_number == rheo_sweep_number].index[0]].threshold_index.iloc[0]
 
 def extract_rheobase_sweep(dataset, window=1000, align_to_threshold_idx=True):
@@ -41,18 +40,26 @@ def extract_rheobase_sweep(dataset, window=1000, align_to_threshold_idx=True):
 
 def main():
     input_dir = sys.argv[1]
-    output_path = sys.argv[2]
+    idx = sys.argv[2]
+    n_chunks = sys.argv[3]
+    output_dir = sys.argv[4]
 
     path_list = list(Path(input_dir).iterdir())
+    chunks = np.array_split(np.array(path_list), int(n_chunks))
+    path_list = chunks[int(idx)]
 
     my_dict = defaultdict(list)
     for i, path in enumerate(path_list):
         dataset = create_ephys_data_set(str(path))
         drop_failed_sweeps(dataset)
-        t, v = extract_rheobase_sweep(dataset)
+        try:
+            t, v = extract_rheobase_sweep(dataset)
+        except:
+            print(f"Failed to extract rheobase sweep for {path}")
+            continue
         my_dict[path.name] = np.array(v)
 
-    np.savez(output_path, **my_dict)
+    np.savez(output_dir, **my_dict)
 
 if __name__ == "__main__":
     main()
