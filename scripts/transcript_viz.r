@@ -164,7 +164,7 @@ plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRU
     sig_intron_attr_subset <- sig_intron_attr %>%
         subset(mcols(.)$intron_group == my_intron_group)
 
-    if (type(transcripts_subset) == "double") {
+    if (type(transcripts_subset) == "double" || type(transcripts_subset) == "integer") {
         exonByTranscript <- get_exonByTranscript(my_intron_group)
         junctions <- get_junctions(my_intron_group)
     } else {

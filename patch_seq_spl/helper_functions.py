@@ -36,7 +36,8 @@ file_name_to_subclass = pd.read_csv("data/2021-09-13_mouse_file_manifest.csv", d
 
 file_name_to_cell_type = pd.read_csv("data/2021-09-13_mouse_file_manifest.csv", dtype={"cell_specimen_id": str})\
     .query("technique == 'intracellular_electrophysiology'")\
-    .assign(cell_type = lambda x:x["file_id"].map(file_id_to_cell_type))\
+    .assign(cell_type = lambda x: x["file_id"].map(file_id_to_cell_type))\
+    .assign(cell_type = lambda x: x["cell_type"].str.replace(" ", "_"))\
     .set_index("file_name")\
     ["cell_type"].to_dict()
 
@@ -224,7 +225,7 @@ class ExtendedAnnData(anndata.AnnData):
 
         r(
             """
-            sig_intron_attr <- get_sig_intron_attr(sig_intron_attr)
+            sig_intron_attr <- get_sig_intron_attr()
             annotation_from_gtf <- get_annotation_from_gtf()
             """)
 
@@ -385,9 +386,13 @@ class ExtendedAnnData(anndata.AnnData):
                           hover_name = df_for_plotting["index"], 
                           labels = {"value": "PSI", "ephys_prop": ephys_prop})
         
-    def plot_ggtranscript(self, intron_group):
-        from utility.ryp import r
-        r(f"plot_intron_group('{intron_group}')")
+    def plot_ggtranscript(self, intron_group, adjacent_only = True, focus = True, transcripts_subset = [0]):
+        from utility.ryp import r, to_r
+        to_r(transcripts_subset, "transcripts_subset")
+        to_r(adjacent_only, "adjacent_only")
+        to_r(focus, "focus")
+        r("transcripts_subset <- unlist(transcripts_subset)")
+        r(f"plot_intron_group('{intron_group}', adjacent_only = adjacent_only, focus = focus, transcripts_subset = transcripts_subset)")
 
 def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value"):
     """
