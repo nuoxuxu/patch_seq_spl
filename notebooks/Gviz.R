@@ -1,58 +1,58 @@
-library(Gviz)
-library(GenomicFeatures)
-library(dplyr)
-library(rtracklayer)
-library(reticulate)
+suppressMessages(
+    {
+        library(Gviz)
+        library(GenomicFeatures)
+        library(dplyr)
+        library(rtracklayer)
+        library(stringr)
+    }
+)
 
-options(ucscChromosomeNames=FALSE)
+plot_Gviz <- function(my_intron_group, bam_vec, transcripts_subset, fill_coverage_vec) {
+    stopifnot(length(bam_vec) == length(fill_coverage_vec))
+    
+    sig_intron_attr_subset <- subset(sig_intron_attr, mcols(sig_intron_attr)$intron_group == my_intron_group)
+    exonByTranscript <- get_exonByTranscript(my_intron_group)
 
-anndata <- import("anndata")
-adata <- anndata$read_h5ad("proc/scquint/preprocessed_adata_three.h5ad")
-sig_intron_attr <- adata$var
+    xlim <- get_xlim(sig_intron_attr_subset, exonByTranscript)
+    afrom <- xlim[1]
+    ato <- xlim[2]
 
-gtf_path <- "proc/Mus_musculus.GRCm39.110.gtf"
-txdb <- makeTxDbFromGFF(gtf_path, format = "gtf")
-txdb <- keepSeqlevels(txdb, c(as.character(c(1:19)), "X", "Y", "MT"))
+    my_chromosome <- seqnames(sig_intron_attr_subset) %>% unique() %>% as.character()
+    
+    exonByTranscript <- exonByTranscript[transcripts_subset]
 
+    atrack <- AnnotationTrack(unlist(exonByTranscript), chromosome = my_chromosome, shape = "box", 
+        group=as.factor(mcols(unlist(exonByTranscript))$transcript_name))
+    
+    bam <- bam_vec[1]
+    alTrack_1 <- AlignmentsTrack(glue("proc/merge_bams/{bam}.bam"), 
+        isPaired = TRUE, start = afrom, end = ato, type = c("coverage", "sashimi"), 
+        chromosome = my_chromosome, fill.coverage = fill_coverage_vec[1], name = str_replace_all(bam, "_", " "))
+    
+    bam <- bam_vec[2]
+    alTrack_2 <- AlignmentsTrack(glue("proc/merge_bams/{bam}.bam"), 
+        isPaired = TRUE, start = afrom, end = ato, type = c("coverage", "sashimi"),
+        chromosome = my_chromosome, fill.coverage = fill_coverage_vec[2], name = str_replace_all(bam, "_", " "))
 
-intronsByTranscripts(txdb)
-
-intron_group <- "Scn1a_2_66181571_-"
-plot_coverage_sashimi(intron_group) {
-    sig_intron_attr_subset <- sig_intron_attr %>% 
-        filter(intron_group == {{intron_group}})
-    chromosome <- sig_intron_attr_subset %>% pull(chromosome) %>% unique() %>% as.character()
+    plotTracks(
+        c(alTrack_1, alTrack_2, atrack), from = afrom, to = ato, sashimiHeight = 0.1, 
+        sashimiFilter = introns, main = my_intron_group, groupAnnotation = "group", size = c(1, 1, 10), just.group = "above")
 }
 
-afrom <- 66181571
-ato <- 66271179
-txTr <- GeneRegionTrack(txdb, chromosome = "2", start = afrom,  end = ato, transcriptAnnotation = "feature", geneSymbols = TRUE)
-attributes(txTr)
+# Load data and config
+options(ucscChromosomeNames=FALSE)
+source("scripts/transcript_viz.r")
+sig_intron_attr <- get_sig_intron_attr()
+introns <- read.csv("proc/scquint/sig_intron_attr.csv") %>%
+    makeGRangesFromDataFrame(keep.extra.columns = TRUE)
 
-subset(txTr@range, txTr@range$feature == "CDS")$symbol %>% unique()
-txTr@range$symbol %>% unique()
+# Start plotting here
+my_intron_group <- "Cacna1a_8_85306098_+"
+bam_vec <- c("Pvalb_Vipr2", "Sst_Calb2_Pdlim5")
+transcripts_subset <- c("Cacna1a-213")
+color_vec <- c("red", "blue")
 
-
-alTrack <- AlignmentsTrack("proc/merge_bams/Lamp5_Lsp1.bam", isPaired = TRUE, start = afrom, end = ato, type = c("coverage", "sashimi"))
-
-plotTracks(
-    c(txTr, alTrack),
-    from = afrom, to = ato, 
-    sashimiFilterTolerance = 5L,
-    sashimiFilter = introns,
-    sashimiHeight = 0.2,
-    sizes = c(1, 1))
-
-GRList <- transcriptsBy(txdb, by = "gene")
-aTrack <- AnnotationTrack(GRList$ENSMUSG00000005980)
-
-# Use rtracklayer
-annotation_from_gtf <- rtracklayer::import(gtf_path)
-annotation_from_gtf <- keepSeqlevels(annotation_from_gtf, c(as.character(c(1:19)), "X", "Y", "MT"), pruning.mode="coarse")
-annotation_from_gtf <- annotation_from_gtf[!is.na(mcols(annotation_from_gtf)$gene_name)]
-annotation_from_gtf <- subset(annotation_from_gtf, type %in% c("exon", "CDS"))
-annotation_from_gtf <- split(annotation_from_gtf, annotation_from_gtf$gene_name)
-
-annotation_from_gtf$Scn1a
-
-plotTracks(aTrack)
+pdf(glue("proc/figures/Gviz_{my_intron_group}.pdf"))
+plot_Gviz(my_intron_group, bam_vec, transcripts_subset, color_vec)
+dev.off()
