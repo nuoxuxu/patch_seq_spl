@@ -131,7 +131,7 @@ get_xlim <- function(sig_intron_attr_subset, exonByTranscript) {
     c(xmin, xmax)
 }
 
-get_base_plot <- function(annodation_gene_name) {
+get_base_plot <- function(annodation_gene_name, fill_by) {
     library(ggtranscript)
     exons <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "exon") %>%
         as.data.frame()
@@ -151,7 +151,7 @@ get_base_plot <- function(annodation_gene_name) {
         ) +
         geom_range(
             data = cds,
-            aes(fill = tag)
+            aes(fill = {{fill_by}})
         ) +
         geom_intron(
             data = to_intron(exons, "transcript_name"),
@@ -160,7 +160,7 @@ get_base_plot <- function(annodation_gene_name) {
         )
 }
 
-plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRUE, transcripts_subset = 0) {
+plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRUE, transcripts_subset = 0, fill_by = "tag") {
     sig_intron_attr_subset <- sig_intron_attr %>%
         subset(mcols(.)$intron_group == my_intron_group)
 
@@ -179,13 +179,13 @@ plot_intron_group <- function(my_intron_group, adjacent_only = TRUE, focus = TRU
     if (focus) {
         exonByTranscript %>%
             unlist(use.names = FALSE) %>%
-            get_base_plot() +
+            get_base_plot(fill_by) +
             geom_junction(data = junctions, junction.y.max = 0.5) +
             coord_cartesian(xlim = xlim)
     } else {
         exonByTranscript %>%
             unlist(use.names = FALSE) %>%
-            get_base_plot() +
+            get_base_plot(fill_by) +
             geom_junction(data = junctions, junction.y.max = 0.5)
     }
 }
