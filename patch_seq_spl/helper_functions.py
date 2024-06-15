@@ -103,6 +103,20 @@ class GLMAccessor:
             gene_names = self.get_gene_names(sig_glm_results)
             return list(set(gene_names))
 
+    def plot_logp(self, intron_group):
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+
+        temp = self._obj.loc[intron_group].apply(lambda x: -np.log10(x))
+
+        fig, ax = plt.subplots()
+        temp.sort_values(ascending=False)\
+            .pipe(sns.barplot, ax=ax)
+        ax.set_ylabel("-log10(p-value)")
+        ax.set_xlabel("predictors")
+        ax.set_title(f"{intron_group}")
+        g = ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+
     def plot_heatmap(self, rank_by = "all", top = 100, vmin = 0, vmax = 150, save_path = False):
         import matplotlib.pyplot as plt
         import matplotlib as mpl
@@ -386,13 +400,13 @@ class ExtendedAnnData(anndata.AnnData):
                           hover_name = df_for_plotting["index"], 
                           labels = {"value": "PSI", "ephys_prop": ephys_prop})
         
-    def plot_ggtranscript(self, intron_group, adjacent_only = True, focus = True, transcripts_subset = [0]):
+    def plot_ggtranscript(self, intron_group, adjacent_only = True, focus = True, transcripts_subset = [0], fill_by = "tag"):
         from utility.ryp import r, to_r
         to_r(transcripts_subset, "transcripts_subset")
         to_r(adjacent_only, "adjacent_only")
         to_r(focus, "focus")
         r("transcripts_subset <- unlist(transcripts_subset)")
-        r(f"plot_intron_group('{intron_group}', adjacent_only = adjacent_only, focus = focus, transcripts_subset = transcripts_subset)")
+        r(f"plot_intron_group('{intron_group}', adjacent_only=adjacent_only, focus=focus, transcripts_subset=transcripts_subset, fill_by='{fill_by}')")
 
 def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value"):
     """
