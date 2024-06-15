@@ -3638,6 +3638,9 @@ def set_config(*, to_r_format: Literal['keep', 'matrix', 'data.frame'] |
             raise ValueError(error_message)
         _config['plot_height'] = plot_height
         no_config_set = False
+    if plot_width is not None and plot_height is not None:
+        r(f'options(device=function() {{ svglite(.tempfile, '
+          f'width={_config["plot_width"]}, height={_config["plot_height"]})}})')
     if no_config_set:
         error_message = 'no configuration settings were specified'
         raise ValueError(error_message)
