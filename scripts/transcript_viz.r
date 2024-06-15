@@ -151,7 +151,7 @@ get_base_plot <- function(annodation_gene_name, fill_by) {
         ) +
         geom_range(
             data = cds,
-            aes(fill = {{fill_by}})
+            aes(fill = !!sym(fill_by))
         ) +
         geom_intron(
             data = to_intron(exons, "transcript_name"),
