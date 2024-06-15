@@ -228,7 +228,7 @@ class IPFXAccessor:
     
 class ExtendedAnnData(anndata.AnnData):
     def __init__(self, adata, ggtranscript = False):
-        super().__init__(adata.X, obs=adata.obs, var=adata.var, obsm=adata.obsm, varm=adata.varm)
+        super().__init__(adata.X, obs=adata.obs, var=adata.var, obsm=adata.obsm, varm=adata.varm, uns=adata.uns)
         if ggtranscript:
             self.load_data_ggtranscript()
 
