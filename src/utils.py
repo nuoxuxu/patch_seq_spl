@@ -1928,7 +1928,7 @@ def fisher(table):
     import numpy as np
     table = np.asarray(table)
     assert table.shape == (2, 2)
-    from ryp import to_py, to_r
+    from src.ryp import to_py, to_r
     to_r(table, 'table', format='matrix')
     result = to_py('fisher.test(table)')
     OR = result['estimate']
@@ -2045,7 +2045,7 @@ def z_to_p(z_scores, *, high_precision=False):
     """
     import numpy as np
     if high_precision:
-        from ryp import to_py, to_r
+        from src.ryp import to_py, to_r
         to_r(np.abs(z_scores), 'abs.z')
         pvalues = 2 * np.exp(np.float128(to_py(
             'pnorm(abs.z, lower.tail=False, log.p=True)')))
@@ -3051,7 +3051,7 @@ def correlate(X, Y=None, *, rank=False, GLS=False, covariates=None,
     # If include_PCs=True, include the top N PCs as covariates
     if include_PCs:
         assert Y is None  # not implemented
-        from ryp import r, to_py, to_r
+        from src.ryp import r, to_py, to_r
         # r('source("https://raw.githubusercontent.com/heatherjzhou/PCAForQTL/"
         #           "master/R/22.01.04_main1.1_runElbow.R")')
         r('runElbow<-function(X=NULL,prcompResult=NULL){if(is.null(prcompResul'
