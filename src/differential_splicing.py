@@ -7,11 +7,15 @@ import torch.nn as nn
 import torch.optim as optim
 from pyro.distributions import DirichletMultinomial, Gamma, Multinomial
 import scanpy as sc
-from scipy.special import softmax
 from scipy.stats import chi2, mannwhitneyu
 from sklearn.model_selection import KFold, train_test_split, StratifiedKFold
 from tqdm import tqdm
 from .data import make_intron_group_summation_cpu, filter_min_cells_per_feature, filter_min_cells_per_intron_group, regroup, filter_min_global_proportion
+import platform
+import scipy.special as sp
+
+dtype = torch.float64
+device = "cpu"
 
 # original: from skbio.stats.composition import closure
 def closure(mat):
@@ -120,11 +124,12 @@ def normalize(x):
 def run_regression(adata, intron_group, reduced, full, device="cpu"):
     from patsy import dmatrix
     y = adata[:, adata.var.intron_group == intron_group].X.toarray()
-    
-    df = adata.obsm["predictors"]
+    cells_to_keep = np.flatnonzero(y.sum(axis=1) != 0)
+    y = y[cells_to_keep]
 
-    x_reduced = np.asarray(dmatrix(reduced, df))
-    x_full = np.asarray(dmatrix(full, df))
+    df = adata.obsm["predictors"]
+    x_reduced = np.asarray(dmatrix(reduced, df))[cells_to_keep, :]
+    x_full = np.asarray(dmatrix(full, df))[cells_to_keep, :]
 
     n_cells, n_classes = y.shape
 
@@ -133,7 +138,7 @@ def run_regression(adata, intron_group, reduced, full, device="cpu"):
     model_null = lambda: DirichletMultinomialGLM(x_reduced.shape[1], n_classes, init_A=init_A_null)
     ll_null, model_null = fit_model(model_null, x_reduced, y, device)
 
-    init_A = np.zeros((x_full.shape[1], n_classes - 1), dtype=float)
+    init_A = np.zeros((x_full.shape[1], n_classes - 1), dtype=np.float64)
     model = lambda: DirichletMultinomialGLM(x_full.shape[1], n_classes, init_A=init_A)
     ll, model = fit_model(model, x_full, y, device)
     if ll+1e-2 < ll_null:
@@ -145,7 +150,7 @@ def run_regression(adata, intron_group, reduced, full, device="cpu"):
 
     conc = np.exp(log_alpha)
     beta = A.T
-    psi = normalize(conc * softmax(x_full @ A))
+    psi = normalize(conc * sp.softmax(x_full @ A))
     if np.isnan(p_value): p_value = 1.0
 
     df_intron_group = pd.DataFrame(dict(intron_group=[intron_group], p_value=[p_value], ll_null=[ll_null], ll=[ll], n_classes=[n_classes]))
@@ -221,8 +226,8 @@ def _run_differential_splicing(
 class MultinomialGLM(nn.Module):
     def __init__(self, n_covariates, n_classes):
         super(MultinomialGLM, self).__init__()
-        self.A = nn.Parameter(torch.zeros((n_covariates, n_classes-1), dtype=torch.double))
-        self.register_buffer("constant_column", torch.zeros((n_covariates, 1), dtype=torch.double))
+        self.A = nn.Parameter(torch.zeros((n_covariates, n_classes-1), dtype=dtype))
+        self.register_buffer("constant_column", torch.zeros((n_covariates, 1), dtype=dtype))
         self.ll = None
 
     def get_full_A(self):
@@ -253,11 +258,11 @@ class DirichletMultinomialGLM(nn.Module):
             init_A = np.zeros((n_covariates, n_classes - 1))
         if init_log_alpha is None:
             init_log_alpha = np.ones(1) * 1.0
-        self.A = nn.Parameter(torch.tensor(init_A, dtype=torch.double))
-        self.log_alpha = nn.Parameter(torch.tensor(init_log_alpha, dtype=torch.double))
-        self.register_buffer("constant_column", torch.zeros((n_covariates, 1), dtype=torch.double))
-        self.register_buffer("conc_shape", torch.tensor(1 + 1e-4, dtype=torch.double))
-        self.register_buffer("conc_rate", torch.tensor(1e-4, dtype=torch.double))
+        self.A = nn.Parameter(torch.tensor(init_A, dtype=dtype))
+        self.log_alpha = nn.Parameter(torch.tensor(init_log_alpha, dtype=dtype))
+        self.register_buffer("constant_column", torch.zeros((n_covariates, 1), dtype=dtype))
+        self.register_buffer("conc_shape", torch.tensor(1 + 1e-4, dtype=dtype))
+        self.register_buffer("conc_rate", torch.tensor(1e-4, dtype=dtype))
         self.ll = None
 
     def get_full_A(self):
@@ -282,8 +287,8 @@ class DirichletMultinomialGLM(nn.Module):
 
 
 def fit_model(model_initializer, X, Y, device="cpu"):
-    X = torch.tensor(X, dtype=torch.double, device=device)
-    Y = torch.tensor(Y, dtype=torch.double, device=device)
+    X = torch.tensor(X, dtype=dtype, device=device)
+    Y = torch.tensor(Y, dtype=dtype, device=device)
 
     initial_lr = 1.0
 
@@ -317,331 +322,3 @@ def fit_model(model_initializer, X, Y, device="cpu"):
             lr /= 10.0
 
     return ll, model
-
-
-def run_differential_splicing(
-    adata,
-    cell_idx_a,
-    cell_idx_b,
-    **kwargs
-):
-    from statsmodels.stats.multitest import multipletests
-    print("sample sizes: ", len(cell_idx_a), len(cell_idx_b))
-
-    df_intron_group, df_intron = _run_differential_splicing(
-        adata,
-        cell_idx_a,
-        cell_idx_b,
-        **kwargs,
-    )
-    if len(df_intron_group) == 0: return df_intron_group, df_intron
-    df_intron["delta_psi"] = df_intron["psi_a"] - df_intron["psi_b"]
-    df_intron["lfc_psi"] = np.log2(df_intron["psi_a"] + 1e-9) - np.log2(df_intron["psi_b"] + 1e-9)
-    df_intron["abs_delta_psi"] = df_intron.delta_psi.abs()
-    df_intron["abs_lfc_psi"] = df_intron.lfc_psi.abs()
-
-    if "gene_id" not in df_intron.columns:
-        df_intron["gene_id"] = "NA"
-    if "gene_name" not in df_intron.columns:
-        df_intron["gene_name"] = "NA"
-    groupby = df_intron.groupby("intron_group").agg({"gene_id": "first", "gene_name": "first", "abs_delta_psi": "max", "abs_lfc_psi": "max"})
-    groupby = groupby.rename(columns={"abs_delta_psi": "max_abs_delta_psi", "abs_lfc_psi": "max_abs_lfc_psi"})
-    df_intron_group = df_intron_group.set_index("intron_group").merge(groupby, left_index=True, right_index=True, how="inner")
-    df_intron_group = df_intron_group.sort_values(by="p_value")
-    df_intron_group["ranking"] = np.arange(len(df_intron_group))
-
-    reject, pvals_corrected, _, _ = multipletests(
-        df_intron_group.p_value.values, 0.05, "fdr_bh"
-    )
-    df_intron_group["p_value_adj"] = pvals_corrected
-
-    return df_intron_group, df_intron
-
-
-def make_intron_group_summation(intron_groups, device):
-    n_introns = len(intron_groups)
-    n_intron_groups = len(np.unique(intron_groups))
-    rows, cols = zip(*list(enumerate(intron_groups)))
-    vals = np.ones(n_introns, dtype=int)
-
-    I = torch.tensor([cols, rows], device=device, dtype=torch.long)
-    V = torch.tensor(vals, device=device, dtype=torch.float)
-    intron_group_summation = torch.sparse.FloatTensor(
-        I, V, torch.Size([n_intron_groups, n_introns])
-    )
-    return intron_group_summation
-
-
-class LassoDirichletMultinomialGLM(nn.Module):
-    def __init__(self, n_covariates, n_classes, l1_penalty, init_A=None, init_log_alpha=None):
-        super(LassoDirichletMultinomialGLM, self).__init__()
-        self.n_covariates = n_covariates
-        self.n_classes = n_classes
-        if init_A is None:
-            init_A = np.zeros((n_covariates, n_classes - 1))
-        if init_log_alpha is None:
-            init_log_alpha = np.ones(1) * 1.0
-        self.A = nn.Parameter(torch.tensor(init_A, dtype=torch.double))
-        self.log_alpha = nn.Parameter(torch.tensor(init_log_alpha, dtype=torch.double))
-        self.register_buffer("constant_column", torch.zeros((n_covariates, 1), dtype=torch.double))
-        self.register_buffer("conc_shape", torch.tensor(1 + 1e-4, dtype=torch.double))
-        self.register_buffer("conc_rate", torch.tensor(1e-4, dtype=torch.double))
-        self.l1_penalty = l1_penalty
-        self.ll = None
-
-    def get_full_A(self):
-        return torch.cat([self.A, self.constant_column], 1)
-
-    def forward(self, X):
-        alpha = torch.exp(self.log_alpha)
-        A = self.get_full_A()
-        P = torch.softmax(X @ A, dim=1)
-        concentration = torch.mul(alpha, P)
-        return A, alpha, concentration, P
-
-    def loss_function(self, X, Y):
-        A, alpha, concentration, P = self.forward(X)
-        ll = DirichletMultinomial(concentration).log_prob(Y).sum()
-        res = (
-            - ll
-            - Gamma(self.conc_shape, self.conc_rate).log_prob(alpha).sum()
-            + self.l1_penalty * torch.sum(torch.abs(self.A[1:]))  # excluding the intercept
-        )
-        self.ll = ll
-        return res
-
-
-class LassoMultinomialGLM(nn.Module):
-    def __init__(self, n_covariates, n_classes, l1_penalty):
-        super(LassoMultinomialGLM, self).__init__()
-        self.A = nn.Parameter(torch.zeros((n_covariates, n_classes-1), dtype=torch.double))
-        self.register_buffer("constant_column", torch.zeros((n_covariates, 1), dtype=torch.double))
-        self.ll = None
-        self.l1_penalty = l1_penalty
-
-    def get_full_A(self):
-        return torch.cat([self.A, self.constant_column], 1)
-
-    def forward(self, X):
-        A = self.get_full_A()
-        logits = X @ A
-        return logits
-
-    def loss_function(self, X, Y):
-        logits = self.forward(X)
-        ll = Multinomial(logits=logits).log_prob(Y).sum()
-        res = (
-            - ll
-            + self.l1_penalty * torch.sum(torch.abs(self.A[1:]))  # excluding the intercept
-        )
-        self.ll = ll
-        return res
-
-
-class CVLassoMultinomialGLM:
-    def __init__(self, l1_penalty_min, l1_penalty_max, n_trials):
-        self.l1_penalty_min = l1_penalty_min
-        self.l1_penalty_max = l1_penalty_max
-        self.n_trials = n_trials
-
-        import warnings
-        warnings.filterwarnings('ignore')
-
-    def fit(self, X, Y, stratification, device="cpu"):
-        n_covariates = X.shape[1]
-        n_classes = Y.shape[1]
-
-        def objective(l1_penalty):
-            train_ll = []
-            test_ll = []
-            for train_index, test_index in StratifiedKFold(n_splits=5, shuffle=True, random_state=42).split(X, stratification):
-                model = lambda: LassoMultinomialGLM(n_covariates, n_classes, l1_penalty)
-                ll, model = fit_model(model, X[train_index], Y[train_index], device=device)
-                train_ll.append(ll)
-                model.loss_function(
-                    torch.tensor(X[test_index], dtype=torch.double, device=device),
-                    torch.tensor(Y[test_index], dtype=torch.double, device=device)
-                )
-                test_ll.append(model.ll.cpu().detach().numpy())
-            return -np.mean(test_ll)
-
-        l1_penalties = np.linspace(self.l1_penalty_min, self.l1_penalty_max, self.n_trials)
-        losses = list(map(objective, l1_penalties))
-        l1_penalty = l1_penalties[np.argmin(losses)]
-
-        self.l1_penalty = l1_penalty
-        model = lambda: LassoMultinomialGLM(n_covariates, n_classes, l1_penalty)
-        ll, model = fit_model(model, X, Y, device=device)
-        self.ll = ll
-        self.model = model
-
-
-class CVLassoDirichletMultinomialGLM:
-    def __init__(self, l1_penalty_min, l1_penalty_max, n_trials):
-        self.l1_penalty_min = l1_penalty_min
-        self.l1_penalty_max = l1_penalty_max
-        self.n_trials = n_trials
-
-        import warnings
-        warnings.filterwarnings('ignore')
-
-    def fit(self, X, Y, stratification, device="cpu", threads=1):
-        from joblib import Parallel, delayed
-        n_covariates = X.shape[1]
-        n_classes = Y.shape[1]
-
-        def objective(l1_penalty, X, Y, stratification):
-            train_ll = []
-            test_ll = []
-            for train_index, test_index in StratifiedKFold(n_splits=5, shuffle=True, random_state=42).split(X, stratification):
-                model = lambda: LassoDirichletMultinomialGLM(n_covariates, n_classes, l1_penalty)
-                ll, model = fit_model(model, X[train_index], Y[train_index], device=device)
-                train_ll.append(ll)
-                model.loss_function(
-                    torch.tensor(X[test_index], dtype=torch.double, device=device),
-                    torch.tensor(Y[test_index], dtype=torch.double, device=device)
-                )
-                test_ll.append(model.ll.cpu().detach().numpy())
-            return -np.mean(test_ll)
-
-        l1_penalties = np.linspace(self.l1_penalty_min, self.l1_penalty_max, self.n_trials)
-        losses =  Parallel(n_jobs=threads)(delayed(objective)(l1_penalty, X, Y, stratification) for l1_penalty in l1_penalties)
-        print("losses: ", losses)
-        l1_penalty = l1_penalties[np.nanargmin(losses)]
-
-        self.l1_penalty = l1_penalty
-        model = lambda: LassoDirichletMultinomialGLM(n_covariates, n_classes, l1_penalty)
-        ll, model = fit_model(model, X, Y, device=device)
-        self.ll = ll
-        self.model = model
-
-
-def _run_differential_expression(adata, cell_idx_a, cell_idx_b, min_total_cells_per_gene):
-    cell_idx_all = np.concatenate([cell_idx_a, cell_idx_b])
-    print(adata.shape)
-    adata = adata[cell_idx_all].copy()
-    print(adata.shape)
-    total_cells_per_gene = (adata.X > 0).sum(axis=0).A1.ravel()
-    adata = adata[:, total_cells_per_gene >= min_total_cells_per_gene]
-    print(adata.shape)
-
-    sc.pp.normalize_total(adata, target_sum=1e4)
-    sc.pp.log1p(adata)
-
-    X_a = adata.X[: len(cell_idx_a)].toarray()
-    X_b = adata.X[len(cell_idx_a) :].toarray()
-    print(X_a.shape, X_b.shape)
-    diff_exp = pd.DataFrame(
-        dict(
-            gene=adata.var_names.values,
-            p_value=[
-                mannwhitneyu(X_a[:, i], X_b[:, i], alternative="two-sided").pvalue
-                for i in range(X_a.shape[1])
-            ],
-            lfc=np.log2(np.expm1(X_a).mean(axis=0) + 1e-9)
-            - np.log2(np.expm1(X_b).mean(axis=0) + 1e-9),
-        )
-    )
-    diff_exp["abs_lfc"] = diff_exp.lfc.abs()
-    diff_exp["sort_val"] = list(zip(diff_exp.p_value, -diff_exp.lfc.abs()))
-    diff_exp = diff_exp.sort_values(by="sort_val").drop("sort_val", 1)
-    diff_exp["ranking"] = np.arange(len(diff_exp))
-    return diff_exp
-
-
-def run_differential_expression(
-    adata, cell_idx_a, cell_idx_b, min_total_cells_per_gene=100
-):
-    from statsmodels.stats.multitest import multipletests
-    print("sample sizes: ", len(cell_idx_a), len(cell_idx_b))
-    diff_exp = _run_differential_expression(
-        adata, cell_idx_a, cell_idx_b, min_total_cells_per_gene
-    )
-    reject, pvals_corrected, _, _ = multipletests(
-        diff_exp.p_value.values, 0.05, "fdr_bh"
-    )
-    diff_exp["p_value_adj"] = pvals_corrected
-    return diff_exp
-
-
-def run_differential_splicing_for_each_group(
-    adata_spl,
-    groupby,
-    groups=None,
-    subset_to_groups=False,
-    **kwargs,
-):
-    if subset_to_groups:
-        assert(groups is not None)
-        adata_spl = adata_spl[adata_spl.obs[groupby].isin(groups)]
-    
-    all_intron_groups = []
-    all_introns = []
-
-    if groups is None:
-        groups = adata_spl.obs[groupby].unique()
-
-    for g in groups:
-        print(g)
-        cell_idx_a = np.where(adata_spl.obs[groupby]==g)[0]
-        cell_idx_b = np.where(adata_spl.obs[groupby]!=g)[0]
-        intron_groups, introns = run_differential_splicing(
-            adata_spl, cell_idx_a, cell_idx_b, **kwargs, 
-        )
-        intron_groups["test_group"] = g
-        introns["test_group"] = g
-        intron_groups["name"] = intron_groups.index
-        introns["name"] = introns.index
-        all_intron_groups.append(intron_groups)
-        all_introns.append(introns)
-
-    all_intron_groups = pd.concat(all_intron_groups, ignore_index=True)
-    all_introns = pd.concat(all_introns, ignore_index=True)
-    return all_intron_groups, all_introns
-
-
-def find_marker_introns(intron_groups, introns, n=10, max_p_value_adj=0.05, min_delta_psi=0.05):
-    intron_groups = intron_groups[intron_groups.p_value_adj <= max_p_value_adj]
-    significant_groups_per_ig = intron_groups.groupby(["name"]).test_group.unique()
-    groups = intron_groups.test_group.unique()
-    
-    def check_sig(i):
-        return (
-            i.intron_group in significant_groups_per_ig.index and
-            i.test_group in significant_groups_per_ig.loc[i.intron_group] and
-            i.delta_psi >= min_delta_psi
-        )
-    introns = introns[introns.apply(check_sig, axis=1)]
-
-    marker_introns = defaultdict(list)
-    introns = introns.sample(frac=1.0, random_state=42).sort_values("delta_psi", ascending=False).drop_duplicates("gene_name")
-    i = 0
-    while sum(map(len, marker_introns.values())) < n*len(groups) and i < len(introns):
-        intron = introns.iloc[i]
-        if len(marker_introns[intron.test_group]) < n:
-            marker_introns[intron.test_group].append(intron["name"])
-        i += 1
-    return marker_introns
-
-
-def mask_PSI(adata_spl, marker_introns, groupby, min_cells=10):
-    marker_introns_list = sum(marker_introns.values(), [])
-    adata_spl = adata_spl[:, marker_introns_list]
-    PSI_raw = pd.DataFrame(adata_spl.layers["PSI_raw"])
-    n_cells_per_group = PSI_raw.notna().groupby(adata_spl.obs[groupby].values).sum()
-    PSI_raw_masked = adata_spl.layers["PSI_raw"].copy()
-    for g in n_cells_per_group.index:
-        idx_cells = np.where(adata_spl.obs[groupby]==g)[0]
-        for i in n_cells_per_group.columns:
-            if n_cells_per_group.loc[g, i] < min_cells:
-                PSI_raw_masked[idx_cells, i] = np.nan
-    adata_spl.layers["PSI_raw_masked"] = PSI_raw_masked
-    return adata_spl
-
-def run_regression_list(ephys_prop, intron_group_list):
-    from functools import partial
-    adata = anndata.read_h5ad("proc/adata_filtered.h5ad")
-    run_regression_partial = partial(run_regression, adata.X, adata.obs[ephys_prop].values, adata.var)
-    df, _ = zip(*map(run_regression_partial, intron_group_list))
-    df = pd.concat(df)
-    return df
