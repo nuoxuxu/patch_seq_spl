@@ -4,7 +4,7 @@ import dask.dataframe as dd
 from pathlib import Path
 import numpy as np
 import anndata
-import scquint.data as sd
+import src.data as sd
 from scipy.sparse import csr_matrix
 
 def main():
