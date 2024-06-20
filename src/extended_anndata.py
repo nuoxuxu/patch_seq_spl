@@ -14,21 +14,8 @@ transcriptomic_id_cell_type = metadata\
     ["T-type Label"].to_dict()
 
 class ExtendedAnnData(anndata.AnnData):
-    def __init__(self, adata, ggtranscript = False):
+    def __init__(self, adata):
         super().__init__(adata.X, obs=adata.obs, var=adata.var, obsm=adata.obsm, varm=adata.varm, uns=adata.uns)
-        if ggtranscript:
-            self.load_data_ggtranscript()
-
-    def load_data_ggtranscript(adata):
-        from src.ryp import r, to_r
-        to_r(adata.var, "sig_intron_attr")
-        r("source('scripts/transcript_viz.r')")
-
-        r(
-            """
-            sig_intron_attr <- get_sig_intron_attr()
-            annotation_from_gtf <- get_annotation_from_gtf()
-            """)
 
     def filter_adata(self, params):
         import src.data as sd
@@ -188,9 +175,16 @@ class ExtendedAnnData(anndata.AnnData):
                           labels = {"value": "PSI", "ephys_prop": ephys_prop})
         
     def plot_ggtranscript(self, intron_group, adjacent_only = True, focus = True, transcripts_subset = [0], fill_by = "tag"):
-        from src.ryp import r, to_r
+        from src.ryp import r, to_r, to_py
         to_r(transcripts_subset, "transcripts_subset")
+        r("transcripts_subset <- unlist(transcripts_subset)")
         to_r(adjacent_only, "adjacent_only")
         to_r(focus, "focus")
-        r("transcripts_subset <- unlist(transcripts_subset)")
-        r(f"plot_intron_group('{intron_group}', adjacent_only=adjacent_only, focus=focus, transcripts_subset=transcripts_subset, fill_by='{fill_by}')")
+
+        if to_py('!exists("sig_intron_attr")'):                
+            r("source('scripts/transcript_viz.r')")
+            r("annotation_from_gtf <- get_annotation_from_gtf()")
+            r("sig_intron_attr <- get_sig_intron_attr()")
+            r(f"plot_intron_group('{intron_group}', adjacent_only=adjacent_only, focus=focus, transcripts_subset=transcripts_subset, fill_by='{fill_by}')")
+        else:
+            r(f"plot_intron_group('{intron_group}', adjacent_only=adjacent_only, focus=focus, transcripts_subset=transcripts_subset, fill_by='{fill_by}')")
