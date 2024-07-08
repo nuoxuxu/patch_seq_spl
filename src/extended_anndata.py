@@ -41,6 +41,8 @@ class ExtendedAnnData(anndata.AnnData):
         transcriptomic_ID_subclass_path = "data/mappings/transcriptomic_ID_subclass.json"
         with open(transcriptomic_ID_subclass_path, "r") as f:
             transcriptomic_ID_subclass = json.load(f)
+        with open("data/mappings/transcriptomics_file_name_cell_type.json") as f:
+            transcriptomics_file_name_cell_type = json.load(f)
         transcriptomic_id_to_specimen_id_path = "data/mappings/transcriptomic_id_to_specimen_id.json"
         metadata_path = "data/20200711_patchseq_metadata_mouse.csv"    
 
@@ -56,8 +58,9 @@ class ExtendedAnnData(anndata.AnnData):
         self = self[common_IDs, :]
         ephys_data = ephys_data.loc[common_IDs]
 
-        # Add subclass labels to ephys data
+        # Add subclass and cell type labels to ephys data
         ephys_data = ephys_data.assign(subclass = ephys_data.index.map(transcriptomic_ID_subclass)).dropna()
+        ephys_data = ephys_data.assign(cell_type = ephys_data.index.map(transcriptomics_file_name_cell_type)).dropna()
 
         # Add cpms to ephys data
         cpm_path = "data/20200513_Mouse_PatchSeq_Release_cpm.v2.csv"
@@ -86,6 +89,8 @@ class ExtendedAnnData(anndata.AnnData):
 
         for subclass in ephys_data["subclass"].unique():
             ephys_data[subclass] = ephys_data["subclass"] == subclass
+        for cell_type in ephys_data["cell_type"].unique():
+            ephys_data[cell_type] = ephys_data["cell_type"] == cell_type
 
         self.obsm["predictors"] = ephys_data
         return ExtendedAnnData(self)
