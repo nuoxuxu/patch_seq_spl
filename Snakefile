@@ -16,6 +16,7 @@ continuous_predictors = ephys_props + ["soma_depth", "cpm"]
 categorical_predictors = ['Sst', 'Pvalb', 'Vip', 'Lamp5', 'Sncg', 'Serpinf1', 'subclass']
 with open("data/mappings/transcriptomics_file_name_cell_type.json", "r") as f:
     transcriptomics_file_name_cell_type = json.load(f)
+transcriptomics_file_name_cell_type = {k: v.replace(" ", "_") for k, v in transcriptomics_file_name_cell_type.items()}         
 cell_types = list(set(transcriptomics_file_name_cell_type.values()))
 all_predictors = continuous_predictors + categorical_predictors
 runtime_dict = {"simple": "3h", "multiple": "24h"}
