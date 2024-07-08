@@ -80,13 +80,23 @@ class GLMAccessor:
         if rank_by == "all":
             p_value_matrix = temp.loc[temp.apply(lambda x: (x < 0.05)).sum(axis = 1).sort_values(ascending = False).index]
             if sig_only:
-                return p_value_matrix.loc[p_value_matrix.apply(lambda x: (x < 0.05)).sum(axis=1) > 0]
+                return p_value_matrix.loc[p_value_matrix.apply(lambda x: (x < 0.05)).sum(axis = 1) > 0]
             else:
                 return p_value_matrix
         elif rank_by == "ephys_prop":
             ephys_props = pd.read_csv("data/ephys_data_sc.csv", index_col = 0).columns
-            temp = temp[ephys_props]
-            return temp.loc[temp.apply(lambda x: (x < 0.05)).sum(axis=1) > 0]
+            p_value_matrix = temp.loc[temp[ephys_props].apply(lambda x: (x < 0.05)).sum(axis = 1).sort_values(ascending = False).index]
+            if sig_only:
+                return p_value_matrix.loc[p_value_matrix[ephys_props].apply(lambda x: (x < 0.05)).sum(axis = 1) > 0]
+            else:
+                return p_value_matrix
+        elif rank_by == "subclass":
+            subclass_list = ["Vip", "Sst", "Pvalb", "Lamp5", "Sncg", "Serpinf1"]
+            p_value_matrix = temp.loc[temp[subclass_list].apply(lambda x: (x < 0.05)).sum(axis = 1).sort_values(ascending = False).index]
+            if sig_only:
+                return p_value_matrix.loc[p_value_matrix[subclass_list].apply(lambda x: (x < 0.05)).sum(axis = 1) > 0]
+            else:
+                return p_value_matrix
         else:
             p_value_matrix = temp.loc[temp[rank_by].abs().sort_values(ascending = True).index]
             if sig_only:
