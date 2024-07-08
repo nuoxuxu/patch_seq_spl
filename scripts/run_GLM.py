@@ -1,8 +1,8 @@
 import scanpy as sc
-import scquint.differential_splicing as ds
+import src.differential_splicing as ds
 import pandas as pd
-from patch_seq_spl.helper_functions import add_predictors
-
+from src.extended_anndata import add_predictors
+#TODO move run_regression to extended_anndata
 adata = sc.read_h5ad(snakemake.input[0])
 adata = add_predictors(adata)
 

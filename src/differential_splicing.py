@@ -121,6 +121,7 @@ def lrtest(llmin, llmax, df):
 def normalize(x):
     return x / x.sum(axis = 1)[: , None]
 
+#TODO: debug this function under osx-arm64, use https://lectures.scientific-python.org/advanced/debugging/index.html#debugging-segmentation-faults-using-gdb
 def run_regression(adata, intron_group, reduced, full, device="cpu"):
     from patsy import dmatrix
     y = adata[:, adata.var.intron_group == intron_group].X.toarray()
