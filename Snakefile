@@ -2,7 +2,7 @@ import scanpy as sc
 import pandas as pd
 from pathlib import Path
 import numpy as np
-import scquint.differential_splicing as ds
+import src.differential_splicing as ds
 import os
 import platform
 import json

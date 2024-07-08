@@ -61,6 +61,7 @@ class ExtendedAnnData(anndata.AnnData):
         # Add subclass and cell type labels to ephys data
         ephys_data = ephys_data.assign(subclass = ephys_data.index.map(transcriptomic_ID_subclass)).dropna()
         ephys_data = ephys_data.assign(cell_type = ephys_data.index.map(transcriptomics_file_name_cell_type)).dropna()
+        ephys_data = ephys_data.assign(cell_type = lambda x: x["cell_type"].str.replace(" ", "_"))
 
         # Add cpms to ephys data
         cpm_path = "data/20200513_Mouse_PatchSeq_Release_cpm.v2.csv"
