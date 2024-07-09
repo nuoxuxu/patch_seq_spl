@@ -190,6 +190,8 @@ def _initialize_R() -> tuple[cffi.FFI, _cffi_backend.Lib]:
     extern SEXP R_NamesSymbol;
     extern int R_NaInt;
     extern SEXP R_NilValue;
+    extern int R_ParseError;
+    extern char R_ParseErrorMsg[256];
     extern SEXP R_RowNamesSymbol;
     
     SEXP CAR(SEXP);
@@ -212,8 +214,6 @@ def _initialize_R() -> tuple[cffi.FFI, _cffi_backend.Lib]:
     SEXP R_do_slot(SEXP, SEXP);
     SEXP R_lsInternal(SEXP, Rboolean);
     void R_runHandlers(InputHandler *, fd_set *);
-    SEXP R_tryCatchError(SEXP (*)(void *), void *,
-                         SEXP (*)(SEXP, void *), void *);
     SEXP R_tryEvalSilent(SEXP, SEXP, int *);
     SEXP Rf_ScalarInteger(int);
     SEXP Rf_ScalarLogical(int);
@@ -245,11 +245,10 @@ def _initialize_R() -> tuple[cffi.FFI, _cffi_backend.Lib]:
     SEXP STRING_ELT(SEXP, R_xlen_t);
     int TYPEOF(SEXP);
     SEXP VECTOR_ELT(SEXP, R_xlen_t);
-    void parseError(SEXP, int);
     void setup_Rmainloop(void);
     
-    int	GA_doevent(void);
-    int	GA_initapp(int argc, char *argv[]);
+    int GA_doevent(void);
+    int GA_initapp(int argc, char *argv[]);
     
     int select(int, fd_set *, fd_set *, fd_set *, struct timeval *);
     '''
@@ -460,8 +459,8 @@ def _convert_names(names: Any, names_type: Literal['rownames', 'colnames'],
     Convert rownames or colnames to R, raising an error if they are invalid.
     
     Args:
-        names: a container (list, tuple, or Series) of Python strings that will
-               be converted to R and used as the rownames or colnames
+        names: a container (list, tuple, array, or Series) of Python strings
+               that will be converted to R and used as the rownames or colnames
         names_type: whether names are rownames or colnames
         python_object: the python object that the names are with respect to
         python_object_name: the name of python_object
@@ -477,9 +476,10 @@ def _convert_names(names: Any, names_type: Literal['rownames', 'colnames'],
         raise TypeError(error_message)
     # noinspection PyTypeChecker,PyUnresolvedReferences
     if names_type == 'rownames':
+        # sparse arrays/matrices don't have len(), so use shape
         python_object_length = \
             python_object.shape[0] if hasattr(python_object, 'shape') else \
-                len(python_object)  # sparse arrays/matrices don't have len()
+                len(python_object) if hasattr(python_object, '__len__') else 1
         # noinspection PyTypeChecker
         if isinstance(python_object, (int, float, str, complex)):
             # noinspection PyTypeChecker
@@ -512,7 +512,7 @@ def _convert_names(names: Any, names_type: Literal['rownames', 'colnames'],
     # frozenset and dict will still convert to lists and give an error)
     if isinstance(names, (list, tuple)):
         import pyarrow as pa
-        names = pa.array(names)
+        names = pa.array(names) if names else pa.array([], type=pa.string())
     try:
         # noinspection PyNoneFunctionAssignment,PyTypeChecker
         converted_names = to_r(names, (names_type, rmemory))
@@ -539,7 +539,8 @@ def _convert_names(names: Any, names_type: Literal['rownames', 'colnames'],
     return converted_names
 
 
-def _is_supported_pyarrow_dtype(pyarrow_dtype: Any) -> bool:
+# noinspection PyUnresolvedReferences
+def _is_supported_pyarrow_dtype(pyarrow_dtype: 'DataType') -> bool:
     """
     Return whether pyarrow_dtype is supported by ryp.
     
@@ -1012,7 +1013,8 @@ def _convert_object_to_arrow(python_object: Any,
 
 
 # noinspection PyShadowingBuiltins
-def _check_to_py_format(format: Any, variable_name='format') -> None:
+def _check_to_py_format(format: str | dict[str, str],
+                        variable_name='format') -> None:
     """
     Checks if format is a valid format argument for to_py().
     
@@ -1174,18 +1176,23 @@ def r(R_code: str = ...) -> None:
                 that is supposed to be a string but is unexpectedly None.
     """
     if R_code is ...:
+        _rlib.R_ReplDLLinit()
         # Override q() and quit() so the user doesn't accidentally close Python
         # when trying to exit the R terminal
         r(f'q = quit = function(...) {{'
           f'cat("Press {_EOF_instructions} to return to Python\n")}}')
-        # Run R_ReplDLLdo1() in a loop until the user presses EOF (Ctrl + D on
-        # non-Windows systems, Ctrl + Z followed by Enter on Windows)
-        _rlib.R_ReplDLLinit()
-        while _rlib.R_ReplDLLdo1() != -1:
-            pass
-        print()
-        r(f'q = quit = function(...) {{ cat("Press {_EOF_instructions} to '
-          f'exit the Python terminal, or run exit()\n") }}')  # reset
+        try:
+            # Run R_ReplDLLdo1() in a loop until the user presses EOF (Ctrl + D
+            # on non-Windows systems, Ctrl + Z followed by Enter on Windows).
+            # Ignore KeyboardInterrupts in Python during this loop.
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            while _rlib.R_ReplDLLdo1() != -1:
+                pass
+            print()
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+        finally:
+            r(f'q = quit = function(...) {{ cat("Press {_EOF_instructions} to '
+              f'exit the Python terminal, or run exit()\n") }}')  # reset
         return
     elif isinstance(R_code, tuple) and len(R_code) == 2 and \
             isinstance(R_code[0], str) and isinstance(R_code[1], _RMemory):
@@ -1202,14 +1209,6 @@ def r(R_code: str = ...) -> None:
         error_message = \
             f'R_code has type `{type(R_code).__name__}`, but must be a string'
         raise TypeError(error_message)
-    # Call R_ReplDLLinit() so that these three lines get run:
-    #     if (SETJMP(R_Toplevel.cjmpbuf))
-    #         check_session_exit();
-    #     R_GlobalContext = R_ToplevelContext = R_SessionContext = &R_Toplevel;
-    # This stops R crashing with "Fatal error: unable to initialize the JIT"
-    # whenever there's an R error. Most of these variables aren't exported, so
-    # we can't simply modify them directly with CFFI.
-    _rlib.R_ReplDLLinit()
     # Wrap the code a withAutoprint({}) block so things like r('2 + 2') are
     # printed to the terminal, like in R's interactive mode. (Skip this in
     # nested mode, i.e. when r() is being called to evaluate an R statement
@@ -1224,68 +1223,24 @@ def r(R_code: str = ...) -> None:
     wrapped_R_code = R_code if nested else \
         f'withAutoprint({{{R_code}}}, echo=FALSE)'
     try:
-        # Parse the code. If parsing failed, raise a SyntaxError.
-        # - Because the withAutoprint() affects the parse error, reparse the
-        #   code without it, just to get the correct error message. (This isn't
-        #   necessary in nested mode, since we didn't wrap in withAutoprint()).
-        # - Why wrap R_ParseVector() in tryCatchError() (which suppresses the
-        #   true error message) and then run parseError()? First, running
-        #   R_ParseVector() bare gives the error "corrupted size vs. prev_size"
-        #   when exiting Python after running multiple statements that give
-        #   parse errors. Second, because parseError() delegates to errorcall()
-        #   rather than error(), which doesn't conveniently fill
-        #   R_curErrorBuf() but instead PRINTS the error, which is difficult to
-        #   capture on Windows.
+        # Parse the code with R_ParseVector()
         status = _ffi.new('int[1]')
-        handler = _ffi.callback('SEXP (SEXP cond, void *hdata)')(
-            lambda cond, hdata: _rlib.R_NilValue)
-        
-        e = None
-        
-        def onerror(exception: Exception, *_: Any) -> None:
-            """
-            By default, tryCatchError() ignores exceptions during the
-            ffi.callback; instead, store them in a nonlocal and raise after.
-            """
-            nonlocal e
-            e = exception
-        
-        parsed_expression = rmemory.protect(
-            _rlib.R_tryCatchError(
-                _ffi.callback('SEXP (void *data)', onerror=onerror)(
-                    lambda data: _rlib.R_ParseVector(*_ffi.from_handle(data))),
-                _ffi.new_handle((
-                    _string_to_character_vector(wrapped_R_code, rmemory),
-                    -1, status, _rlib.R_NilValue)),
-                handler, _ffi.NULL))
-        if e is not None:
-            raise e
+        parsed_expression = rmemory.protect(_rlib.R_ParseVector(
+            _string_to_character_vector(wrapped_R_code, rmemory),
+            -1, status, _rlib.R_NilValue))
+        # If parsing failed, raise a SyntaxError
         if status[0] != _rlib.PARSE_OK:
-            if not nested:
-                _rlib.R_tryCatchError(
-                    _ffi.callback('SEXP (void *data)', onerror=onerror)(
-                        lambda data: _rlib.R_ParseVector(
-                            *_ffi.from_handle(data))),
-                    _ffi.new_handle((
-                        _string_to_character_vector(R_code, rmemory),
-                        -1, status, _rlib.R_NilValue)),
-                    handler, _ffi.NULL)
-                if e is not None:
-                    raise e
-            
-            def parseError_wrapper(_: Any) -> _cffi_backend._CDataBase:
-                _rlib.parseError(_rlib.R_NilValue, 0)
-                return _rlib.R_NilValue
-            
-            _rlib.R_tryCatchError(
-                _ffi.callback('SEXP (void *data)', onerror=onerror)(
-                    parseError_wrapper), _ffi.NULL, handler, _ffi.NULL)
-            if e is not None:
-                raise e
-            error_buffer = _rlib.R_curErrorBuf()
-            error_message = _ffi.string(error_buffer)
-            error_message = error_message.decode('utf-8').strip().rstrip()\
-                .removeprefix('Error: ')
+            R_code_lines = R_code.split('\n')
+            error_line = _rlib.R_ParseError - 1
+            parse_error_message = \
+                _ffi.string(_rlib.R_ParseErrorMsg).decode('utf-8')
+            if error_line == 0:
+                error_message = f'{parse_error_message} in "{R_code_lines[0]}"'
+            else:
+                error_message = (
+                    f'{parse_error_message} in:\n'
+                    f'"{R_code_lines[error_line - 1]}\n'
+                    f'{R_code_lines[error_line]}"')
             raise SyntaxError(error_message)
         # Evaluate the parsed expression; it's always a single expression, due
         # to the withAutoprint(). (Except in nested mode, in which case raise
@@ -1299,8 +1254,9 @@ def r(R_code: str = ...) -> None:
                 f'R_statement contains {num_statements} R statements, but '
                 f'must contain a single statement')
             raise ValueError(error_message)
-        result = _rlib.R_tryEvalSilent(_rlib.VECTOR_ELT(parsed_expression, 0),
-                                       _rlib.R_GlobalEnv, status)
+        result = rmemory.protect(
+            _rlib.R_tryEvalSilent(_rlib.VECTOR_ELT(parsed_expression, 0),
+                                  _rlib.R_GlobalEnv, status))
         # Raise RuntimeError on errors and KeyboardInterrupt on Ctrl + C.
         # Since there's no easy way to distinguish Ctrl + C from an error,
         # assume any blank error message was a Ctrl + C; this is a hack.
@@ -1343,6 +1299,7 @@ def r(R_code: str = ...) -> None:
                     _plot_event_thread.start()
         # Return the result to to_py(), if in nested mode
         if nested:
+            # noinspection PyTypeChecker
             return result
     finally:
         # Unprotect everything, unless we are in nested mode, in which case
@@ -1453,11 +1410,10 @@ def to_r(python_object: Any, R_variable_name: str, *,
             import polars as pl
         except ImportError as e:
             error_message = (
-                "polars is not installed; consider setting "
-                "format='numpy', format='pandas', or "
-                "format='pandas-pyarrow' in to_r(), or call e.g. "
-                "set_config(to_r_format='pandas') to change the default "
-                "format")
+                "polars is not installed; consider setting format='numpy', "
+                "format='pandas', or format='pandas-pyarrow' in to_r(), or "
+                "call e.g. set_config(to_r_format='pandas') to change the "
+                "default format")
             raise ImportError(error_message) from e
         is_df = isinstance(python_object, pl.DataFrame)
         is_series = isinstance(python_object, pl.Series)
@@ -1470,15 +1426,14 @@ def to_r(python_object: Any, R_variable_name: str, *,
         is_multiindex = False
     # noinspection PyUnresolvedReferences
     if (is_df or is_series or is_index) and \
-            max(python_object.shape) > 2147483647:
+            max(python_object.shape) > 2_147_483_647:
         # noinspection PyUnresolvedReferences
         dimension_name = 'elements' if len(python_object.shape) == 1 else \
             'rows' if python_object.shape[0] > python_object.shape[1] else \
             'columns'
         # noinspection PyUnresolvedReferences
         error_message = (
-            f'{python_object_name} is a '
-            f'{"pandas" if is_pandas else "polars"} '
+            f'{python_object_name} is a {"pandas" if is_pandas else "polars"} '
             f'{type(python_object).__name__} with '
             f'{max(python_object.shape):,} {dimension_name}, more than '
             f'INT32_MAX (2,147,483,647), the maximum supported in R')
@@ -1528,6 +1483,17 @@ def to_r(python_object: Any, R_variable_name: str, *,
             format = 'data.frame'
         if is_matrix:
             format = 'matrix'
+    # Allow adding rownames of any length to 0 x 0 polars DataFrames
+    if is_df and is_polars and rownames is not None and \
+            len(python_object) == 0:
+        if not hasattr(rownames, '__len__'):
+            error_message = \
+                f'rownames has unsupported type `{type(rownames).__name__}`'
+            raise TypeError(error_message)
+        import numpy as np
+        python_object = np.empty((len(rownames), 0))
+        is_df = is_polars = False
+        is_numpy = is_ndarray = is_matrix = is_multidimensional_ndarray = True
     try:
         # If rownames is not None, and we are not recursing, give an error if
         # python_object is bytes/bytearray (since raw vectors don't have
@@ -1575,7 +1541,7 @@ def to_r(python_object: Any, R_variable_name: str, *,
         elif isinstance(python_object, bool):
             result = rmemory.protect(_rlib.Rf_ScalarLogical(python_object))
         elif isinstance(python_object, int):
-            if abs(python_object) > 2147483647:
+            if abs(python_object) > 2_147_483_647:
                 # Box in a PyArrow Array so the integer gets converted to a
                 # length-1 bit64::integer64 vector.
                 # Note: if the minimum value of the array is exactly
@@ -1721,10 +1687,10 @@ def to_r(python_object: Any, R_variable_name: str, *,
                         # python_object.to_arrow().to_batches() == [], so do:
                         # noinspection PyUnresolvedReferences
                         arrow = python_object.to_arrow()
-                        # noinspection PyTypeChecker
+                        # noinspection PyArgumentList
                         arrow = pa.RecordBatch.from_arrays([
                             arr.combine_chunks() for arr in arrow],
-                            arrow.schema)
+                            schema=arrow.schema)
             elif is_series:
                 # noinspection PyUnresolvedReferences
                 dtype = python_object.dtype
@@ -1893,10 +1859,9 @@ def to_r(python_object: Any, R_variable_name: str, *,
                         f'{python_object_name})], ignore_index=True)',
                         rmemory))
                     shape = python_object.shape
-                    colnames = \
-                        _convert_names(python_object.columns, 'colnames',
-                                       python_object, python_object_name,
-                                       rmemory)
+                    colnames = _convert_names(python_object.columns,
+                                              'colnames', python_object,
+                                              python_object_name, rmemory)
                 else:
                     # Disallow bytestring, IntervalDtype and SparseDtype
                     # columns, as well as pd.ArrowDtype if its pyarrow dtype is
@@ -2161,7 +2126,7 @@ def to_r(python_object: Any, R_variable_name: str, *,
         elif is_numpy:
             # noinspection PyUnresolvedReferences
             if is_ndarray and python_object.ndim > 0 and \
-                    max(python_object.shape) > 2147483647:
+                    max(python_object.shape) > 2_147_483_647:
                 # noinspection PyUnboundLocalVariable,PyUnresolvedReferences
                 max_dimension = np.argmax(python_object.shape)
                 # noinspection PyUnresolvedReferences
@@ -2388,7 +2353,7 @@ def to_r(python_object: Any, R_variable_name: str, *,
                     f'`{sparse_type.__name__}`')
                 raise TypeError(error_message)
             # noinspection PyUnresolvedReferences
-            if python_object.nnz > 2147483647:
+            if python_object.nnz > 2_147_483_647:
                 # noinspection PyUnresolvedReferences
                 error_message = (
                     f'{python_object_name} is a sparse {sparse_supertype} '
@@ -2396,7 +2361,7 @@ def to_r(python_object: Any, R_variable_name: str, *,
                     f'INT32_MAX (2,147,483,647), the maximum supported in R')
                 raise ValueError(error_message)
             # noinspection PyUnresolvedReferences
-            if max(python_object.shape) > 2147483647:
+            if max(python_object.shape) > 2_147_483_647:
                 # noinspection PyUnresolvedReferences
                 dimension_name = \
                     'rows' if python_object.shape[0] > \
@@ -2433,7 +2398,7 @@ def to_r(python_object: Any, R_variable_name: str, *,
                 _rlib.SET_VECTOR_ELT(dimnames, 1, colnames
                     if colnames is not None else _rlib.R_NilValue)
                 args = rmemory.protect(_rlib.Rf_lcons(dimnames, args))
-                _rlib.SET_TAG(args, _rlib.Rf_install(b'dimnames'))
+                _rlib.SET_TAG(args, _rlib.R_DimNamesSymbol)
             dims = rmemory.protect(_rlib.Rf_allocVector(_rlib.INTSXP, 2))
             # noinspection PyUnresolvedReferences
             _rlib.INTEGER(dims)[0] = python_object.shape[0]
@@ -2879,7 +2844,14 @@ def to_py(R_statement: str, *,
                     result[variable_name_str] = converted_variable
                 return result
             case _rlib.LGLSXP:  # logical vector (i.e. bool array)
-                pass
+                if _rlib.Rf_inherits(R_object, b'LogMap'):
+                    # LogMap from the Seurat package is a LGLSXP but has a
+                    # .Data slot containing the actual boolean data
+                    # noinspection PyTypeChecker
+                    return to_py((
+                        f'({R_statement})@.Data',
+                        _rlib.R_do_slot(R_object, _rlib.Rf_install(b'.Data'))),
+                        format=format, index=index, squeeze=squeeze)
             case _rlib.INTSXP:  # integer vector (i.e. int32 array)
                 pass
             case _rlib.REALSXP:  # real vector (i.e. float64 array)
@@ -2894,35 +2866,33 @@ def to_py(R_statement: str, *,
                 # format. If only some elements of the list have names, convert
                 # to a dict, using each element's integer index as its key if
                 # it is unnamed.
+                is_df = _rlib.Rf_inherits(R_object, b'data.frame')
                 names = _rlib.Rf_getAttrib(R_object, _rlib.R_NamesSymbol)
+                if raise_squeeze_errors:
+                    error_message = (
+                        f'`{R_statement}` is a '
+                        f'{"data.frame" if is_df else "list"}, so squeeze '
+                        f'must be None')
+                    raise TypeError(error_message)
                 if names == _rlib.R_NilValue:
-                    if raise_squeeze_errors:
-                        error_message = (
-                            f'`{R_statement}` is a list, so squeeze must be '
-                            f'None')
-                        raise TypeError(error_message)
-                    try:
-                        # noinspection PyTypeChecker
-                        return [to_py((f'({R_statement})[{i + 1}]',
-                                       _rlib.VECTOR_ELT(R_object, i)),
-                                      format=format, index=index,
-                                      squeeze=squeeze)
-                                for i in range(_rlib.Rf_xlength(R_object))]
-                    except RecursionError as e:
-                        error_message = (
-                            f'maximum recursion depth exceeded when '
-                            f'converting the list `{R_statement}` to Python; '
-                            f'this usually means the list contains a circular '
-                            f'reference')
-                        raise ValueError(error_message) from e
+                    if is_df:  # zero-column data.frames may lack names
+                        result = {}
+                    else:
+                        try:
+                            # noinspection PyTypeChecker
+                            return [to_py((f'({R_statement})[{i + 1}]',
+                                           _rlib.VECTOR_ELT(R_object, i)),
+                                          format=format, index=index,
+                                          squeeze=squeeze)
+                                    for i in range(_rlib.Rf_xlength(R_object))]
+                        except RecursionError as e:
+                            error_message = (
+                                f'maximum recursion depth exceeded when '
+                                f'converting the list `{R_statement}` to '
+                                f'Python; this usually means the list '
+                                f'contains a circular reference')
+                            raise ValueError(error_message) from e
                 else:
-                    is_df = _rlib.Rf_inherits(R_object, b'data.frame')
-                    if raise_squeeze_errors:
-                        error_message = (
-                            f'`{R_statement}` is a '
-                            f'{"data.frame" if is_df else "list"}, so squeeze '
-                            f'must be None')
-                        raise TypeError(error_message)
                     names = [_ffi.string(_rlib.R_CHAR(
                         _rlib.STRING_ELT(names, i))).decode('utf-8')
                              for i in range(_rlib.Rf_xlength(R_object))]
@@ -2966,74 +2936,71 @@ def to_py(R_statement: str, *,
                         raise ValueError(error_message) from e
                     if not is_df:
                         return result
-                    # R_object is a data.frame
-                    if isinstance(format, dict):
-                        format = format['data.frame']
-                    # If index is None, default to what's in the config
-                    if index is None:
-                        index = \
-                            False if format == 'numpy' else _config['index']
-                    elif format == 'numpy':
-                        error_message = \
-                            "index must be None when format='numpy'"
+                # R_object is a data.frame
+                if isinstance(format, dict):
+                    format = format['data.frame']
+                # If index is None, default to what's in the config
+                if index is None:
+                    index = False if format == 'numpy' else _config['index']
+                elif format == 'numpy':
+                    error_message = "index must be None when format='numpy'"
+                    raise ValueError(error_message)
+                if index:
+                    if index in result:
+                        error_message = (
+                            f'the converted data frame already contains a '
+                            f'column called {index!r}, which conflicts with '
+                            f'the name that was going to be used for the '
+                            f'index column.\nSet index to a different string, '
+                            f'or set index=False to not convert the index.')
                         raise ValueError(error_message)
-                    if index:
-                        if index in result:
-                            error_message = (
-                                f'the converted data frame already contains a '
-                                f'column called {index!r}, which conflicts '
-                                f'with the name that was going to be used for '
-                                f'the index column.\nSet index to a different '
-                                f'string, or set index=False to not convert '
-                                f'the index.')
-                            raise ValueError(error_message)
-                        rownames = _rlib.Rf_getAttrib(R_object,
-                                                     _rlib.R_RowNamesSymbol)
-                        if rownames != _rlib.R_NilValue:
-                            # noinspection PyTypeChecker,PyUnresolvedReferences
-                            result = {index: to_py((
-                                f'rownames({R_statement})', rownames),
-                                format=format, index=False,
-                                squeeze=False).rename(index)} | result
-                        else:
-                            # The data frame doesn't have rownames, even though
-                            # we specified that we wanted to include rownames
-                            index = False
-                    if format == 'polars':
-                        try:
-                            import polars as pl
-                        except ImportError as e:
-                            error_message = (
-                                "polars is not installed; consider setting "
-                                "format='numpy', format='pandas', or "
-                                "format='pandas-pyarrow' in to_py(), or call "
-                                "e.g. set_config(to_py_format='pandas') to "
-                                "change the default format")
-                            raise ImportError(error_message) from e
-                        return pl.DataFrame(result)
-                    elif format == 'numpy':
-                        import numpy as np
-                        if result:
-                            return np.stack(tuple(result.values()), axis=1)
-                        else:
-                            # There's no data in the data.frame, so the dtype
-                            # is undefined; just return an object-dtyped array
-                            # of the same dimensions as the data.frame
-                            function_call = rmemory.protect(_rlib.Rf_lang2(
-                                _rlib.Rf_install(b'dim'), R_object))
-                            dim = _call(function_call, rmemory,
-                                        'cannot get dimensions of data.frame')
-                            return np.empty((_rlib.INTEGER_ELT(dim, 0),
-                                             _rlib.INTEGER_ELT(dim, 1)),
-                                            dtype=object)
+                    rownames = \
+                        _rlib.Rf_getAttrib(R_object, _rlib.R_RowNamesSymbol)
+                    if rownames != _rlib.R_NilValue:
+                        # noinspection PyTypeChecker,PyUnresolvedReferences
+                        result = {index: to_py((
+                            f'rownames({R_statement})', rownames),
+                            format=format, index=False,
+                            squeeze=False).rename(index)} | result
                     else:
-                        import pandas as pd
-                        if index:
-                            index_object = pd.Index(result[index])
-                            del result[index]
-                            return pd.DataFrame(result).set_axis(index_object)
-                        else:
-                            return pd.DataFrame(result)
+                        # The data frame doesn't have rownames, even though we
+                        # specified that we wanted to include rownames
+                        index = False
+                if format == 'polars':
+                    try:
+                        import polars as pl
+                    except ImportError as e:
+                        error_message = (
+                            "polars is not installed; consider setting "
+                            "format='numpy', format='pandas', or "
+                            "format='pandas-pyarrow' in to_py(), or call e.g. "
+                            "set_config(to_py_format='pandas') to change the "
+                            "default format")
+                        raise ImportError(error_message) from e
+                    return pl.DataFrame(result)
+                elif format == 'numpy':
+                    import numpy as np
+                    if result:
+                        return np.stack(tuple(result.values()), axis=1)
+                    else:
+                        # There's no data in the data.frame, so the dtype
+                        # is undefined; just return an object-dtyped array
+                        # of the same dimensions as the data.frame
+                        function_call = rmemory.protect(_rlib.Rf_lang2(
+                            _rlib.Rf_install(b'dim'), R_object))
+                        dim = _call(function_call, rmemory,
+                                    'cannot get dimensions of data.frame')
+                        return np.empty((_rlib.INTEGER_ELT(dim, 0),
+                                         _rlib.INTEGER_ELT(dim, 1)),
+                                        dtype=object)
+                else:
+                    import pandas as pd
+                    if index:
+                        index_object = pd.Index(result[index])
+                        del result[index]
+                        return pd.DataFrame(result).set_axis(index_object)
+                    else:
+                        return pd.DataFrame(result)
             case _rlib.RAWSXP:  # raw vector (i.e. scalar bytearray)
                 if raise_format_errors:
                     error_message = (
@@ -3504,9 +3471,14 @@ def to_py(R_statement: str, *,
                     if not multidimensional:
                         # noinspection PyUnboundLocalVariable
                         result = result.to_frame(name=vector_name)
-                    # noinspection PyUnboundLocalVariable
-                    result.insert_column(0, pl.Series(name=index,
-                                                      values=rownames))
+                    if result.width:
+                        # noinspection PyUnboundLocalVariable
+                        result.insert_column(0, pl.Series(name=index,
+                                                          values=rownames))
+                    else:
+                        # polars forces all 0-column DataFrames to have length
+                        # 0, so manually make a DataFrame of the correct length
+                        result = pl.DataFrame({index: rownames})
             else:  # output_format in ('pandas', 'pandas-pyarrow')
                 import pandas as pd
                 if R_object_type != _rlib.CPLXSXP:
@@ -3535,9 +3507,10 @@ def get_config() -> dict[str, dict[str, str] | str | bool | int]:
 def set_config(*, to_r_format: Literal['keep', 'matrix', 'data.frame'] |
                                None = None,
                to_py_format: Literal['polars', 'pandas', 'pandas-pyarrow',
-                   'numpy'] | dict[Literal['vector', 'matrix', 'data.frame'],
-                                   Literal['polars', 'pandas',
-                                   'pandas-pyarrow', 'numpy']] | None = None,
+                                     'numpy'] |
+                             dict[Literal['vector', 'matrix', 'data.frame'],
+                                  Literal['polars', 'pandas', 'pandas-pyarrow',
+                                  'numpy']] | None = None,
                index: str | Literal[False] | None = None,
                squeeze: bool | None = None,
                plot_width: int | float | None = None,
@@ -3638,9 +3611,10 @@ def set_config(*, to_r_format: Literal['keep', 'matrix', 'data.frame'] |
             raise ValueError(error_message)
         _config['plot_height'] = plot_height
         no_config_set = False
-    if plot_width is not None and plot_height is not None:
+    if plot_width is not None or plot_height is not None:
         r(f'options(device=function() {{ svglite(.tempfile, '
-          f'width={_config["plot_width"]}, height={_config["plot_height"]})}})')
+          f'width={_config["plot_width"]}, '
+          f'height={_config["plot_height"]})}})')
     if no_config_set:
         error_message = 'no configuration settings were specified'
         raise ValueError(error_message)

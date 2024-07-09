@@ -1,2 +1,0 @@
-results/preprocessed_adata_five.h5ad filter=lfs diff=lfs merge=lfs -text
-results/preprocessed_adata_three.h5ad filter=lfs diff=lfs merge=lfs -text

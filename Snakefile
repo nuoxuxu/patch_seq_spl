@@ -2,7 +2,7 @@ import scanpy as sc
 import pandas as pd
 from pathlib import Path
 import numpy as np
-import scquint.differential_splicing as ds
+import src.differential_splicing as ds
 import os
 import platform
 import json
@@ -14,8 +14,12 @@ localrules: preprocess, download_metadata, download_manifest, download_cpm, gene
 ephys_props = pd.read_csv("data/ephys_data_sc.csv").columns[1:].to_list()
 continuous_predictors = ephys_props + ["soma_depth", "cpm"]
 categorical_predictors = ['Sst', 'Pvalb', 'Vip', 'Lamp5', 'Sncg', 'Serpinf1', 'subclass']
+with open("data/mappings/transcriptomics_file_name_cell_type.json", "r") as f:
+    transcriptomics_file_name_cell_type = json.load(f)
+transcriptomics_file_name_cell_type = {k: v.replace(" ", "_") for k, v in transcriptomics_file_name_cell_type.items()}         
+cell_types = list(set(transcriptomics_file_name_cell_type.values()))
 all_predictors = continuous_predictors + categorical_predictors
-runtime_dict = {"simple": "5h", "multiple": "24h"}
+runtime_dict = {"simple": "3h", "multiple": "24h"}
 
 metadata = pd.read_csv('data/20200711_patchseq_metadata_mouse.csv')
 with open("data/mappings/transcriptomics_sample_id_file_name.json", "r") as f:
@@ -29,17 +33,17 @@ metadata["T-type Label"] = metadata["T-type Label"].map(lambda x: "_".join(x.spl
 #     input:
 #         expand("proc/quantas/beta_binomial/{predictor}.csv", predictor=ephys_props)
 
-# rule all:
-#     input:
-#         expand("proc/{group_by}/simple/{predictor}.csv", group_by=["three", "five"], predictor=categorical_predictors, allow_missing=True)
+rule all:
+    input:
+        expand("proc/scquint/three/simple/{predictor}.csv", predictor=cell_types, allow_missing=True)
 
 # rule all:
 #     input:
 #         expand("proc/merge_bams/{cell_type}.bam", cell_type=metadata["T-type Label"].unique())
 
-rule all:
-    input:
-        expand("proc/merge_bams/{cell_type}.bam.bai", cell_type=metadata["T-type Label"].unique())        
+# rule all:
+#     input:
+#         expand("proc/merge_bams/{cell_type}.bam.bai", cell_type=metadata["T-type Label"].unique())        
 
 rule download_metadata:
     output: "data/20200711_patchseq_metadata_mouse.csv"
