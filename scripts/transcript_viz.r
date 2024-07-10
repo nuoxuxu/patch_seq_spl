@@ -19,9 +19,7 @@ get_annotation_from_gtf <- function() {
 
 get_sig_intron_attr <- function() {
     # if sig_intron_attr does not exist in the current environment
-    if (!exists("sig_intron_attr")) {
-        sig_intron_attr <- read.csv("proc/scquint/sig_intron_attr.csv")
-    }
+    sig_intron_attr <- read.csv("results/sig_VGIC_SJ_attr.csv")
     sig_intron_attr <- sig_intron_attr %>%
         makeGRangesFromDataFrame(keep.extra.columns = TRUE)
     start(sig_intron_attr) <- start(sig_intron_attr) - 1
@@ -58,7 +56,7 @@ get_exonByTranscript <- function(my_intron_group, adjacent_only = TRUE) {
     exonByTranscript <- split(annotation_for_gene, mcols(annotation_for_gene)$transcript_name)
 
     sig_intron_attr_subset <- sig_intron_attr %>%
-        subset(mcols(.)$intron_group == my_intron_group)
+        subset(mcols(.)$event_name == my_intron_group)
 
     if (adjacent_only) {
         hits <- findAdjacent(sig_intron_attr_subset, exonByTranscript)
@@ -78,7 +76,7 @@ get_junctions <- function(my_intron_group, adjacent_only = TRUE) {
     exonByTranscript <- split(annotation_for_gene, mcols(annotation_for_gene)$transcript_name)
 
     sig_intron_attr_subset <- sig_intron_attr %>%
-        subset(mcols(.)$intron_group == my_intron_group)
+        subset(mcols(.)$event_name == my_intron_group)
 
     if (adjacent_only) {
         hits <- findAdjacent(sig_intron_attr_subset, exonByTranscript)
