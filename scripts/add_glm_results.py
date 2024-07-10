@@ -43,8 +43,8 @@ def get_glm_results(path: str, key: Literal["p_value", "statistic"] = "p_value")
 
     return glm_results
 
-for group_by in ["three", "five"]:
-    adata = anndata.read_h5ad(f"proc/scquint/preprocessed_adata_{group_by}.h5ad")
-    adata.uns["simple"] = get_glm_results(f"proc/scquint/{group_by}/simple")
-    adata.uns["multiple"] = get_glm_results(f"proc/scquint/{group_by}/multiple")
-    adata.write_h5ad(f"proc/scquint/preprocessed_adata_{group_by}.h5ad")
+# for group_by in ["three", "five"]:
+#     adata = anndata.read_h5ad(f"proc/scquint/preprocessed_adata_{group_by}.h5ad")
+#     adata.uns["simple"] = get_glm_results(f"proc/scquint/{group_by}/simple")
+#     adata.uns["multiple"] = get_glm_results(f"proc/scquint/{group_by}/multiple")
+#     adata.write_h5ad(f"proc/scquint/preprocessed_adata_{group_by}.h5ad")
