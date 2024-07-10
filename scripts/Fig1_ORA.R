@@ -7,16 +7,31 @@ library(tidyr)
 library(pheatmap)
 library(jsonlite)
 library(ggplot2)
-src <- import("patch_seq_spl.helper_functions")
+library(rlang)
 
-glm_results <- src$get_glm_results("proc/scquint/three/simple")
+get_sig_gene_list <- function(glm_results, predictor) {
+    predictor_sym <- sym(predictor)
+    glm_results %>%
+        dplyr::filter(!!predictor_sym < 0.05) %>% 
+        # get rownames
+        rownames() %>% 
+        # extract gene names
+        stringr::str_extract("^[^_]*")
+}
+
+anndata <- import("anndata")
+adata <- anndata$read_h5ad("results/preprocessed_adata_three.h5ad")
+glm_results <- adata$uns$simple
 prop_labels <- fromJSON("data/mappings/prop_names.json") %>% unlist()
 all_predictors <- glm_results %>% colnames()
+ephys_props <- all_predictors[!all_predictors %in% c("Lamp5", "Pvalb", "Sncg", "Vip", "Sst", "cpm", "subclass", "soma_depth")]
+
 universe <- glm_results %>%
     rownames() %>%
     stringr::str_extract("^[^_]*") %>%
     unique()
-gene_list <- sapply(all_predictors, function(x) {src$get_sig_gene_list(glm_results, x)})
+
+gene_list <- sapply(ephys_props, function(x) {get_sig_gene_list(glm_results, x)})
 
 get_ora_per_subcategory <- function(gene_list, universe, subcategory, rank_by = "count", top = 20) {
     db <- msigdbr(species = "Mus musculus", category = "C5", subcategory = str_glue("GO:{subcategory}"))
@@ -35,9 +50,7 @@ get_ora_per_subcategory <- function(gene_list, universe, subcategory, rank_by = 
         filter(padj < 0.05) %>%
         arrange(cluster, padj) %>%
         # Add additional columns from db
-        left_join(distinct(db, gs_subcat, gs_exact_source,
-                            gs_name, gs_description),
-                by = c("pathway" = "gs_exact_source")) %>%
+        left_join(distinct(db, gs_subcat, gs_exact_source, gs_name, gs_description), by = c("pathway" = "gs_exact_source")) %>%
         # Reformat descriptions
         mutate(gs_name = sub({str_glue("^GO{subcategory}_")}, "", gs_name),
                 gs_name = gsub("_", " ", gs_name),
@@ -89,7 +102,7 @@ plot_pheatmap <- function(gene_list, universe, rank_by, top) {
 }
 
 # Use pheatmap for three_multiple
-plot_pheatmap(gene_list, universe, "Pvalb", 20)
+plot_pheatmap(gene_list, universe, "count", 20)
 
 three_simple <- get_mat_for_heatmap(gene_list, universe, "Pvalb", 20)
 annotation_row <- data.frame(row.names = row.names(three_simple[[1]]), subcategory =  three_simple[[2]])
@@ -102,6 +115,5 @@ pheatmap(
     labels_col = colnames(three_simple[[2]]),
     legend_labels = "-log10(padj)",
     width = 7,
-    height = 7.5,
-    # filename = "proc/figures/ORA_three_multiple.png"
+    height = 7.5
     )
