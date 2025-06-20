@@ -10,7 +10,6 @@ import matplotlib.pyplot as plt
 from statsmodels.stats.multitest import fdrcorrection
 
 input_dir = "lampert_data/tab_files"
-gtf_path = "/project/s/shreejoy/Genomic_references/Ensembl/Homo_sapiens.GRCh38.113.chr.gtf"
 path_to_metadata = "lampert_data/patchseq-meta.csv"
 
 metadata = pl.read_csv(path_to_metadata, null_values = "NA")
@@ -27,9 +26,7 @@ combined = pl.scan_csv(
     )\
     .with_columns(
         pl.col("cell_id").str.split("/").map_elements(lambda x: x[1], return_dtype=pl.String)
-    ).drop("path")
-
-combined = combined\
+    ).drop("path")\
     .filter(
         pl.col("unique_reads")!=0
     )\
@@ -99,17 +96,25 @@ ratio_matrix = sharing_end.select("SJ", "ratio", "cell_id")\
         values="ratio"
     )\
     .sort("cell_id")\
-    .drop("cell_id")\
     .fill_null(strategy="mean")
 
+ratio_matrix.write_csv("lampert_data/ratio_matrix.csv")
 # Getting the ephys props
-ephys_prop = metadata['RMP', 'pA_start', 'pA_threshold', 'Rheobase', 'input_res', 'Input_res_new', 'AP_threshhold', 'AP_max', 'Apamp', 'Min_AHP', 'Loc_APHW', 'APD', 'max_slope_raw', 'max_slope_smth', 'slope_oversh', 'PC1']\
+ephys_prop = metadata['cell_id', 'RMP', 'pA_start', 'pA_threshold', 'Rheobase', 'input_res', 'Input_res_new', 'AP_threshhold', 'AP_max', 'Apamp', 'Min_AHP', 'Loc_APHW', 'APD', 'max_slope_raw', 'max_slope_smth', 'slope_oversh', 'PC1']\
     .fill_null(strategy="mean")
+ephys_prop.write_csv("lampert_data/ephys_prop.csv")
+# Get SJ atributes
+# SJ_attributes = pl.DataFrame(ratio_matrix.columns[1:])\
+#     .rename({"column_0": "SJ"})\
+#     .join(
+#         sharing_end.unique("SJ").select("SJ", "chrom", "start", "end", "strand"),
+#         on="SJ",
+#         how="left"
+#     )
 
-# Correlating the ratio matrix with the ephys properties
-corr_matrix, p_value_matrix = utils.correlate(ratio_matrix, ephys_prop)
+corr_matrix, p_value_matrix = utils.correlate(ratio_matrix.drop("cell_id"), ephys_prop.drop("cell_id"))
 
-p_value_matrix = pl.concat([pl.Series("SJ", ratio_matrix.columns).to_frame(), p_value_matrix], how="horizontal")
+p_value_matrix = pl.concat([pl.Series("SJ", ratio_matrix.drop("cell_id").columns).to_frame(), p_value_matrix], how="horizontal")
 
 p_value_matrix = p_value_matrix.drop_nans()
 
@@ -121,20 +126,22 @@ corr_p_value_matrix = pd.DataFrame(
     columns = p_value_matrix.drop("SJ").columns
 )\
 .pipe(pl.from_pandas, include_index=True)\
-.rename({"None": "SJ"})\
-.with_columns(
-    cs.exclude("SJ") < 0.05
-)\
-.with_columns(
-    sum = pl.sum_horizontal(cs.exclude("SJ"))
-)\
-.filter(pl.col("sum") != 0)
+.rename({"None": "SJ"})
+
+corr_sig_boolean_matrix = corr_p_value_matrix\
+    .with_columns(
+        cs.exclude("SJ") < 0.05
+    )\
+    .with_columns(
+        sum = pl.sum_horizontal(cs.exclude("SJ"))
+    )\
+    .filter(pl.col("sum") != 0)
 
 # Add back the gene names
-corr_p_value_matrix.select("SJ").write_csv("lampert_data/SJ_names.csv")
+corr_sig_boolean_matrix.select("SJ").write_csv("lampert_data/SJ_names.csv")
 SJ_pig_genes = pl.read_csv("lampert_data/SJ_pig_genes.csv")
 
-corr_p_value_matrix = corr_p_value_matrix\
+corr_sig_boolean_matrix = corr_sig_boolean_matrix\
     .join(
         SJ_pig_genes,
         on="SJ",
@@ -146,7 +153,47 @@ corr_p_value_matrix = corr_p_value_matrix\
     .with_columns(
         SJ = pl.col("pig_gene_name") + pl.lit("_") + pl.col("SJ")
     )\
+    .drop("pig_gene_name").sort("sum", descending=True)
+
+SJ_attributes = pl.DataFrame(ratio_matrix.columns[1:])\
+    .rename({"column_0": "SJ"})\
+    .join(
+        sharing_end.unique("SJ").select("SJ", "chrom", "start", "end", "strand"),
+        on="SJ",
+        how="left"
+    )\
+    .join(
+        SJ_pig_genes,
+        on="SJ",
+        how="left"
+    )\
+    .drop_nulls()\
+    .with_columns(
+        SJ = pl.col("pig_gene_name") + pl.lit("_") + pl.col("SJ")
+    )
+
+SJ_attributes = corr_sig_boolean_matrix.join(SJ_attributes, on="SJ", how="left")[:, SJ_attributes.columns]
+
+SJ_attributes.write_csv("lampert_data/SJ_attributes.csv")
+
+corr_p_value_matrix = corr_p_value_matrix\
+    .join(
+        SJ_pig_genes,
+        on="SJ",
+        how="left"
+    )\
+    .with_columns(
+        SJ = pl.col("pig_gene_name") + pl.lit("_") + pl.col("SJ")
+    )\
+    .drop_nulls()\
     .drop("pig_gene_name")
+
+corr_p_value_matrix = corr_sig_boolean_matrix["SJ"].to_frame()\
+    .join(
+        corr_p_value_matrix,
+        on="SJ",
+        how="left"
+    )\
 
 # Plotting
 
@@ -186,4 +233,18 @@ SJ_to_show\
     .write_csv("lampert_data/genes_to_check.csv")
 
 
-corr_p_value_matrix.sort("sum", descending=True).write_csv("lampert_data/corr_p_value_matrix.csv")
+corr_sig_boolean_matrix.sort("sum", descending=True).write_csv("lampert_data/corr_p_value_matrix.csv")
+
+sharing_end\
+    .unique("SJ")\
+    .select(
+        "SJ", "chrom", "start", "end", "strand", "ratio"
+    )\
+    .join(
+        SJ_pig_genes,
+        on="SJ",
+        how="inner"
+    )\
+    .with_columns(
+        SJ = pl.col("pig_gene_name") + pl.lit("_") + pl.col("SJ")
+    )

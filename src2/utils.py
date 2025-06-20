@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import polars as pl
 import signal
@@ -5,7 +6,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from functools import cache, reduce, wraps
-from typing import Any
+from typing import Any, Iterable
 pl.enable_string_cache()
 
 ###############################################################################
@@ -38,17 +39,38 @@ def Timer(message=None, verbose=True):
             raise e
         finally:
             end = default_timer()
-            time_difference = end - start
-            if time_difference >= 1:
-                hours, remainder = divmod(time_difference, 3600)
-                minutes, seconds = divmod(remainder, 60)
-                print(f'{message if message is not None else "Command"} '
-                      f'{"aborted after" if aborted else "took"} '
-                      f'{int(hours):02}:{int(minutes):02}:{int(seconds):02}')
-            else:
-                print(f'{message if message is not None else "Command"} '
-                      f'{"aborted after" if aborted else "took"} '
-                      f'{time_difference * 1000:.0f} milliseconds')
+            duration = end - start
+            
+            days = int(duration // 86400)
+            hours = int((duration % 86400) // 3600)
+            minutes = int((duration % 3600) // 60)
+            seconds = int(duration % 60)
+            milliseconds = int((duration * 1000) % 1000)
+            microseconds = int((duration * 1000000) % 1000)
+            nanoseconds = int((duration * 1000000000) % 1000)
+            
+            time_parts = []
+            if days > 0:
+                time_parts.append(f'{days} {plural("day", days)}')
+            if hours > 0:
+                time_parts.append(f'{hours}h')
+            if minutes > 0:
+                time_parts.append(f'{minutes}m')
+            if seconds > 0:
+                time_parts.append(f'{seconds}s')
+            if milliseconds > 0:
+                time_parts.append(f'{milliseconds}ms')
+            if microseconds > 0:
+                time_parts.append(f'{microseconds}µs')
+            if nanoseconds > 0:
+                time_parts.append(f'{nanoseconds}ns')
+            
+            time_str = \
+                ' '.join(time_parts[:2]) if time_parts else 'less than 1ns'
+            
+            print(f'{message if message is not None else "Command"} '
+                  f'{"aborted after" if aborted else "took"} '
+                  f'{time_str}')
     else:
         yield  # no-op
 
@@ -207,7 +229,7 @@ def check_type(variable: Any, variable_name: str,
                expected_types: type | tuple[type, ...],
                expected_type_name: str):
     """
-    Raise a TypeError if variable is not of the expected type.
+    Raise a TypeError if `variable` is not of the expected type.
     
     Args:
         variable: the variable to be checked
@@ -231,42 +253,69 @@ def check_type(variable: Any, variable_name: str,
                         variable.dtype == np.bool_:
                     return
     error_message = (
-        f'`{variable_name}` must be {expected_type_name}, but has type '
-        f'`{type(variable).__name__}`')
+        f'{variable_name} must be {expected_type_name}, but has type '
+        f'{type(variable).__name__!r}')
     raise TypeError(error_message)
 
 
+def check_types(variable: Iterable[Any], variable_name: str,
+                expected_types: type | tuple[type, ...],
+                expected_type_name: str):
+    """
+    Raise a TypeError if not all elements of `variable` are strings.
+    
+    Unlike `check_type`, specifying int, float, or bool does not implicitly
+    include their NumPy equivalents.
+    
+    Args:
+        variable: the variable to be checked
+        variable_name: the name of the variable, used in the error message
+        expected_types: the expected type or types
+        expected_type_name: the name of the expected type, used in the error
+                            message (e.g. 'polars DataFrames')
+    """
+    for element in variable:
+        if not isinstance(element, expected_types):
+            error_message = (
+                f'all elements of {variable_name} must be '
+                f'{expected_type_name}, but it contains an element of type '
+                f'{type(element).__name__!r}')
+            raise TypeError(error_message)
+
+
 def check_dtype(series: pl.Series, series_name: str,
-                expected_types: Any | tuple[Any, ...]):
+                expected_dtypes: pl.datatypes.classes.DataTypeClass | str |
+                                 tuple[pl.datatypes.classes.DataTypeClass | str,
+                                      ...]):
     """
     Raise a TypeError if series is not of the expected polars dtype.
     
     Args:
         series: the polars Series to be checked
         series_name: the name of the variable, used in the error message
-        expected_types: the expected dtype or dtypes. Specify the string
+        expected_dtypes: the expected dtype or dtypes. Specify the string
                         'integer' to include all integer dtypes, and
                         'floating-point' to include all floating-point dtypes.
     """
     base_type = series.dtype.base_type()
-    if not isinstance(expected_types, tuple):
-        expected_types = expected_types,
-    for expected_type in expected_types:
+    if not isinstance(expected_dtypes, tuple):
+        expected_dtypes = expected_dtypes,
+    for expected_type in expected_dtypes:
         if base_type == expected_type or expected_type == 'integer' and \
                 base_type in pl.INTEGER_DTYPES or \
                 expected_type == 'floating-point' and \
                 base_type in pl.FLOAT_DTYPES:
             return
-    if len(expected_types) == 1:
-        expected_types = expected_types[0]
-    elif len(expected_types) == 2:
-        expected_types = ' or '.join(expected_types)
+    if len(expected_dtypes) == 1:
+        expected_dtypes = str(expected_dtypes[0])
+    elif len(expected_dtypes) == 2:
+        expected_dtypes = ' or '.join(map(str, expected_dtypes))
     else:
-        expected_types = \
-            ', '.join(expected_types[:-1]) + ', or ' + expected_types[-1]
+        expected_dtypes = ', '.join(map(str, expected_dtypes[:-1])) + \
+                          ', or ' + str(expected_dtypes[-1])
     error_message = (
-        f'`{series_name}` must be {expected_types}, but has data type '
-        f'`{base_type}`')
+        f'{series_name} must be {expected_dtypes}, but has data type '
+        f'{base_type!r}')
     raise TypeError(error_message)
 
 
@@ -296,13 +345,67 @@ def check_bounds(variable, variable_name, lower_bound=None, upper_bound=None,
                                     else variable < lower_bound) or \
             upper_bound is not None and (variable >= upper_bound if right_open
                                          else variable > upper_bound):
-        error_message = f'{variable_name} is {variable}, but must be'
+        error_message = f'{variable_name} is {variable:,}, but must be'
         if lower_bound is not None:
-            error_message += f' {">" if left_open else "≥"} {lower_bound}'
+            error_message += f' {">" if left_open else "≥"} {lower_bound:,}'
             if upper_bound is not None:
                 error_message += ' and'
         if upper_bound is not None:
-            error_message += f' {"<" if right_open else "≤"} {upper_bound}'
+            error_message += f' {"<" if right_open else "≤"} {upper_bound:,}'
+        raise ValueError(error_message)
+
+
+def check_R_variable_name(
+        R_variable_name: str,
+        variable_name: str,
+        R_keywords: set[str] = {
+            'if', 'else', 'repeat', 'while', 'function', 'for', 'in', 'next',
+            'break', 'TRUE', 'FALSE', 'NULL', 'Inf', 'NaN', 'NA',
+            'NA_integer_', 'NA_real_', 'NA_complex_', 'NA_character_',
+            '...'}) -> None:
+    """
+    Raise an error if R_variable_name is not a valid variable name in R.
+    
+    Args:
+        R_variable_name: the R variable name to be checked
+        variable_name: the name of the Python variable the R variable name
+                       `R_variable_name` is stored in
+        R_keywords: the set of R reserved keywords to check against
+    """
+    import re
+    if not R_variable_name:
+        error_message = f'{variable_name} is an empty string'
+        raise ValueError(error_message)
+    if R_variable_name[0] == '.':
+        if len(R_variable_name) > 1 and R_variable_name[1].isdigit():
+            error_message = (
+                f'{variable_name} {R_variable_name!r} starts with a period '
+                f'followed by a digit, which is not a valid R variable name')
+            raise ValueError(error_message)
+    elif not R_variable_name[0].isidentifier():
+        error_message = (
+            f'{variable_name} {R_variable_name!r} must start with a letter, '
+            f'number, period or underscore')
+        raise ValueError(error_message)
+    if not re.fullmatch(r'[\w.]*', R_variable_name[1:]):
+        invalid_characters = \
+            sorted(set(re.findall(r'[^\w.]',
+                                  ''.join(dict.fromkeys(R_variable_name)))))
+        if len(invalid_characters) == 1:
+            description = f"the character '{invalid_characters[0]}'"
+        else:
+            description = f"the characters " + ", ".join(
+                f"'{character}'" for character in invalid_characters) + \
+                f" and '{invalid_characters[-1]}'"
+        error_message = (
+            f'{variable_name} {R_variable_name!r} contains {description}, but '
+            f'must contain only letters, numbers, periods and underscores')
+        raise ValueError(error_message)
+    if R_variable_name in R_keywords or (R_variable_name.startswith('..') and
+                                         R_variable_name[2:].isdigit()):
+        error_message = (
+            f'{variable_name} {R_variable_name!r} is a reserved keyword in R, '
+            f'and cannot be used as a variable name')
         raise ValueError(error_message)
 
 
@@ -390,8 +493,8 @@ def get_process_pool(max_concurrent, start_method='forkserver'):
 @cache
 def cython_inline(code, boundscheck=False, cdivision=True,
                   initializedcheck=False, wraparound=False,
-                  debug_symbols=False, libraries=None, verbose=False,
-                  **other_cython_settings):
+                  debug_symbols=False, include_dirs=None, libraries=None,
+                  verbose=False, **other_cython_settings):
     """
     A drop-in replacement for cython.inline that supports cimports. It turns on
     the major Cython optimizations (boundscheck=False, cdivision=True,
@@ -411,7 +514,10 @@ def cython_inline(code, boundscheck=False, cdivision=True,
         wraparound: whether to support Python-style negative indexing
         debug_symbols: whether to add debug symbols, so you can run tools like
                        gdb or valgrind; slows down your code
-        libraries: a list of libraries to link against, e.g. ['hdf5']
+        include_dirs: an optional tuple of include directories of libraries to
+                      link against; `np.get_include()` will always be included
+        libraries: an optional tuple of libraries to link against,
+                   e.g. ('hdf5',)
         verbose: if True, print Cython's compilation logs
         **other_cython_settings: other Cython settings, which will be written
                                  into the source code as #cython compiler
@@ -438,7 +544,7 @@ def cython_inline(code, boundscheck=False, cdivision=True,
     # leading newline)
     settings = dict(language_level=3, boundscheck=boundscheck,
                     cdivision=cdivision, initializedcheck=initializedcheck,
-                    wraparound=wraparound)
+                    wraparound=wraparound, **{'warn.undeclared': True})
     settings.update(other_cython_settings)
     code = ''.join(f'#cython: {setting_name}={setting}\n'
                    for setting_name, setting in settings.items()) + \
@@ -461,24 +567,35 @@ def cython_inline(code, boundscheck=False, cdivision=True,
         build_file = os.path.join(cython_cache_dir, f'{module_name}_build.py')
         with open(build_file, 'w') as f:
             import numpy as np
+            if include_dirs is not None:
+                include_dirs = (np.get_include(),) + include_dirs
+            else:
+                include_dirs = np.get_include(),
+            include_dirs = \
+                '[' + ', '.join(f'{include_dir!r}'
+                                for include_dir in include_dirs) + ']'
             if libraries is not None:
                 libraries = \
-                    f'[{", ".join(f"{library!r}" for library in libraries)}]'
+                    f'[' + ', '.join(f'{library!r}'
+                                     for library in libraries) + ']'
             print(dedent(f'''
                 from setuptools import Extension, setup
                 from Cython.Build import cythonize
                 setup(name='{module_name}', ext_modules=cythonize([
                     Extension('{module_name}', ['{code_file}'],
-                              include_dirs=['{np.get_include()}'],
+                              language='c++',
+                              include_dirs={include_dirs},
                               libraries={libraries},
-                              extra_compile_args=['-fopenmp'],
-                              extra_link_args=['-fopenmp'])],
+                              extra_compile_args=['-Ofast', '-march=native',
+                                                  '-funroll-loops',
+                                                  '-fopenmp', '-Werror'],
+                              extra_link_args=['-Ofast', '-fopenmp'])],
                     build_dir='{cython_cache_dir}'))'''), file=f)
-        # Build the code
+        # Build the code (note: `sys.executable` is the location of Python)
         try:
             run(f'cd {cython_cache_dir} && '
                 f'{"CFLAGS=-g " if debug_symbols else ""}'
-                f'python {build_file} build_ext --inplace'
+                f'{sys.executable} {build_file} build_ext --inplace'
                 f'{"" if verbose else " > /dev/null"}')
         except subprocess.CalledProcessError:
             try:
@@ -500,7 +617,7 @@ def cython_inline(code, boundscheck=False, cdivision=True,
     return function_dict
 
     
-def prange(range_body, num_threads):
+def prange(range_body, num_threads, *, nogil=True):
     """
     Generates Cython code for either range() or prange() (depending on whether
     num_threads > 1), pasting the code in range_body inside the (p)range().
@@ -508,16 +625,23 @@ def prange(range_body, num_threads):
     Args:
         range_body: a string of Cython code that will be pasted inside the
                     range() or prange()
-        num_threads: the number of threads
+        num_threads: the number of threads; set `num_threads=None` to use all
+                     available cores (as determined by `os.cpu_count()`)
+        nogil: whether to release the Global Interpreter Lock (GIL); if already
+               released (e.g. via a `with nogil` block), set to False
 
     Returns:
         Cython code for the prange() or range().
     """
-    return f'prange({range_body}, nogil=True, num_threads=num_threads)' \
+    if num_threads is None:
+        num_threads = os.cpu_count()
+    return f'prange({range_body}, {"nogil=True, " if nogil else ""}' \
+           f'num_threads=num_threads)' \
         if num_threads > 1 else f'range({range_body})'
 
 
-def dtype_to_cython_type(dtype):
+@cache
+def cython_type(dtype):
     """
     Converts a NumPy dtype or string representation of a dtype to its
     corresponding Cython type. Raises a TypeError if dtype isn't recognized or
@@ -563,8 +687,8 @@ def debug(turn_on=True, *, third_party=False):
     variables with the same name from outer stack frames.
     
     However, do not include variables from third-party library code (i.e. code
-    files in your mambaforge directory), unless include_library_variables=True.
-    utils.py is not considered library code!
+    files in your miniforge/mambaforge directory), unless
+    include_library_variables=True. utils.py is not considered library code!
     
     Implementation details:
     - Uses sys.modules['__main__'].__dict__ (or get_ipython().user_global_ns
@@ -634,6 +758,81 @@ def to_tuple(value):
         isinstance(value, (str, bytes)) else (value,)
 
 
+def reload(module):
+    """
+    A drop-in replacement for `importlib.reload()` that also updates existing
+    objects' methods (though not class or instance variables).
+    
+    Specifically, after reloading the given module, it updates all type objects
+    in the caller's global namespace that have the same name as a class defined
+    in the reloaded module. The update modifies the existing type objects'
+    methods to match those of the newly reloaded classes. It then updates the
+    `__class__` attribute of all objects defined anywhere (according to
+    `gc.get_objects()`) so that `isinstance()` checks don't break.
+    
+    This function is mainly meant to be called interactively, in which case it
+    will update all objects defined in your current Python session.
+
+    Args:
+        module: the module to reload
+
+    Returns:
+        The newly reloaded module.
+    """
+    import gc
+    import importlib
+    from types import FunctionType
+    
+    def deleted(key):
+        error_message = \
+            f'method {key!r} no longer exists after running reload()'
+        raise AttributeError(error_message)
+    
+    # Sometimes the reload doesn't work on the first try (due to caching?) so
+    # try twice
+    for _ in range(2):
+        # Perform the standard reload
+        module = importlib.reload(module)
+        module_name = module.__name__
+        module_dict = module.__dict__
+        
+        # Get the calling frame's globals
+        # noinspection PyUnresolvedReferences
+        calling_frame_globals = sys._getframe(1).f_globals
+        
+        # Construct the set of classes to update
+        types_to_update = {
+            cls for cls in map(type, calling_frame_globals.values())
+            if cls.__module__ == module_name and cls.__name__ in module_dict}
+        
+        # Update each class
+        for cls in types_to_update:
+            class_dict = cls.__dict__
+            class_name = cls.__name__
+            new_class = module_dict[class_name]
+            new_class_dict = new_class.__dict__
+            
+            # Add/update methods
+            for key, value in new_class_dict.items():
+                if isinstance(value, FunctionType):
+                    setattr(cls, key, value)
+            
+            # Remove methods that no longer exist
+            # (note: it's not possible to fully remove the method because of
+            # the way Python caches method lookups for performance)
+            for key in class_dict.keys() - new_class_dict.keys():
+                if isinstance(class_dict[key], FunctionType):
+                    setattr(cls, key, (
+                        lambda key: lambda *args, **kwargs: deleted(key))(key))
+            
+            # Update __class__ attribute of all instances of the class to point
+            # to the new class, so that `isinstance()` checks don't break
+            for obj in gc.get_objects():
+                if type(obj).__name__ == class_name:
+                    obj.__class__ = new_class
+    
+    return module
+
 ###############################################################################
 # [2] Polars
 ###############################################################################
@@ -679,14 +878,16 @@ def load_npy(filename):
         f'{prefix}.columns', has_header=False).to_series().to_list())
 
 
-def print_df(df):
+def print_df(df, num_rows=-1, num_columns=-1):
     """
     Prints the entirety of a polars DataFrame without truncating.
     
     Args:
         df: the DataFrame to print
+        num_rows: the number of rows to print (-1 to print all rows)
+        num_columns: the number of columns to print (-1 to print all columns)
     """
-    with pl.Config(tbl_rows=-1, tbl_cols=-1):
+    with pl.Config(tbl_rows=num_rows, tbl_cols=num_columns):
         print(df)
 
 
@@ -700,7 +901,7 @@ def print_row(df, row_number=0):
         df: the DataFrame to print the row of
         row_number: which row to print (by default, the first)
     """
-    print_df(df[row_number].melt(variable_name='column'))
+    print_df(df[row_number].unpivot(variable_name='column'))
 
 
 def filter_columns(df, predicates, *more_predicates):
@@ -722,8 +923,11 @@ def filter_columns(df, predicates, *more_predicates):
     """
     predicates = to_tuple(predicates) + more_predicates
     boolean_expression = reduce(lambda a, b: a & b, predicates)
-    return df.pipe(lambda df: df.select(df.select(
-        boolean_expression).melt().filter(pl.col.value)['variable'].to_list()))
+    return df.pipe(lambda df: df.select(df.select(boolean_expression)
+                                        .unpivot()
+                                        .filter(pl.col.value)
+                                        ['variable']
+                                    .to_list()))
 
 
 def map_df(df, map_col, other_df, key_col, value_col, *,
@@ -736,7 +940,7 @@ def map_df(df, map_col, other_df, key_col, value_col, *,
     other_df[key_col], and if so, replace it with the corresponding entry of 
     other_df[value_col].
 
-    Equivalent to df.with_columns(pl.col(map_col).replace(dict(zip(
+    Equivalent to df.with_columns(pl.col(map_col).replace_strict(dict(zip(
     other_df[key_col], other_df[value_col])), default=pl.first() if
     retain_missing else None)).
     
@@ -811,7 +1015,8 @@ def pivot_longer(df, column_groups):
         first, followed by the columns in column_groups in the order they are
         listed there
     """
-    if len(group_lengths := set(map(len, column_groups.values()))) != 1:
+    group_lengths = set(map(len, column_groups.values()))
+    if len(group_lengths) != 1:
         if len(column_groups) == 0:
             raise ValueError('column_groups is empty')
         else:
@@ -918,9 +1123,9 @@ def polars_numpy_autoconvert(use_columns_from=None):
                     if isinstance(return_value, np.ndarray):
                         if return_value.shape[1] != len(columns):
                             error_message = (
-                                f'{prefix} {len(columns)} columns, but a '
+                                f'{prefix} {len(columns):,} columns, but a '
                                 f'returned NumPy array has '
-                                f'{return_value.shape[1]} columns!')
+                                f'{return_value.shape[1]:,} columns!')
                             raise ValueError(error_message)
                         return_values[return_index] = \
                             pl.from_numpy(return_value, columns)
@@ -928,9 +1133,10 @@ def polars_numpy_autoconvert(use_columns_from=None):
             elif columns is not None:
                 if isinstance(return_values, np.ndarray):
                     if return_values.shape[1] != len(columns):
-                        raise ValueError(f'{prefix} {len(columns)} columns, '
+                        raise ValueError(f'{prefix} {len(columns):,} columns, '
                                          f'but the returned NumPy array has '
-                                         f'{return_values.shape[1]} columns!')
+                                         f'{return_values.shape[1]:,} '
+                                         f'columns!')
                     return_values = pl.from_numpy(return_values, columns)
             return return_values
         return polars_to_numpy_wrapper
@@ -993,8 +1199,11 @@ def run_background(cmd, *, log_file=None, unbuffered=False, pipefail=True,
     """
     Runs a bash code segment in the background, on the same node. Uses Python's
     multiprocessing module to ensure no more than max_concurrent processes
-    run at the same time, to avoid overloading the node. Background processes
-    will stop when (or shortly after) Python exits.
+    run at the same time, to avoid overloading the node.
+    
+    Background processes will stop when (or shortly after) Python exits; if
+    this is problematic, call `.get()` on the return value of this function to
+    wait for the process to finish and retrieve its result.
     
     Args:
         cmd: same as run()
@@ -1005,11 +1214,19 @@ def run_background(cmd, *, log_file=None, unbuffered=False, pipefail=True,
         max_concurrent: if not None, at most max_concurrent processes will run
                         at the same time across all calls to run_background()
         **kwargs: same as run()
+    
+    Returns:
+        An object representing the started background process; specifically,
+        the multiprocessing.pool.AsyncResult object returned by
+        multiprocessing.Pool.apply_async(). Call `.get()` on this object to
+        wait for the process to finish and retrieve its result, as a
+        `subprocess.CompletedProcess` object (the same object returned by
+        `run()`).
     """
     run_kwargs = dict(shell=True, executable='/bin/bash')
     run_kwargs.update(**kwargs)
     pool = get_process_pool(max_concurrent)
-    pool.submit(
+    return pool.submit(
         subprocess.run,
         f'{thread_string(num_threads)}'
         f'set -eu{"o pipefail" if pipefail else ""}; '
@@ -1063,7 +1280,7 @@ def run_slurm(cmd, *, job_name='job', log_file=None,
     if job_name == 'interactive':
         raise ValueError("job_name cannot be 'interactive', since that name "
                          "is reserved for interactive jobs created with the "
-                         "`n` command")
+                         "'n' command")
     cluster = os.environ.get('CLUSTER')
     check_cluster(cluster)
     if cluster == 'narval':
@@ -1162,6 +1379,10 @@ def run_function_background(function, *, log_file=None, unbuffered=False,
     Runs a standalone Python function in the background, similarly to
     run_background().
     
+    Background processes will stop when (or shortly after) Python exits; if
+    this is problematic, call `.get()` on the return value of this function to
+    wait for the process to finish and retrieve its result.
+    
     Args:
         function: the function; must import everything it needs and write its
                   output to disk
@@ -1172,9 +1393,17 @@ def run_function_background(function, *, log_file=None, unbuffered=False,
         max_concurrent: same as run_background()
         function_kwargs: passed to function as keyword arguments
         **kwargs: same as run_background()
+    
+    Returns:
+        An object representing the started background process; specifically,
+        the multiprocessing.pool.AsyncResult object returned by
+        multiprocessing.Pool.apply_async(). Call `.get()` on this object to
+        wait for the process to finish and retrieve its result, as a
+        `subprocess.CompletedProcess` object (the same object returned by
+        `run()`).
     """
     from dill.source import getname, getsource
-    run_background(
+    return run_background(
         f'python -u << EOF &> '
         f'{log_file if log_file is not None else "/dev/null"}\n'
         f'{getsource(function)}\n{getname(function)}'
@@ -1308,8 +1537,9 @@ def savefig(filename, *, despine=False, **kwargs):
     """
     import matplotlib.pyplot as plt
     if despine:
-        plt.gca().spines['top'].set_visible(False)
-        plt.gca().spines['right'].set_visible(False)
+        spines = plt.gca().spines
+        spines['top'].set_visible(False)
+        spines['right'].set_visible(False)
     all_kwargs = dict(dpi=450, bbox_inches='tight', pad_inches=0,
                       transparent=filename.endswith('pdf'))
     all_kwargs.update(kwargs)
@@ -1454,7 +1684,7 @@ def generate_palette(num_colors, *, lightness_range=(100 / 3, 200 / 3),
             check_type(argument, argument_name, tuple, 'a two-element tuple')
             if len(argument) != 2:
                 error_message = (
-                    f'`{argument_name}` must be a two-element tuple, but has '
+                    f'{argument_name} must be a two-element tuple, but has '
                     f'{len(argument):,} elements')
                 raise ValueError(error_message)
             for i in range(2):
@@ -1475,10 +1705,10 @@ def generate_palette(num_colors, *, lightness_range=(100 / 3, 200 / 3),
     check_type(first_color, 'first_color', str,
                'a string containing a hex code')
     if not first_color:
-        error_message = '`first_color` is an empty string'
+        error_message = 'first_color is an empty string'
         raise ValueError(error_message)
     if first_color[0] != '#':
-        error_message = '`first_color` must start with "#"'
+        error_message = 'first_color must start with "#"'
         raise ValueError(error_message)
     first_color = to_rgb(first_color)
     first_color = cspace_convert(first_color, 'sRGB1', 'CAM02-UCS')
@@ -1489,22 +1719,22 @@ def generate_palette(num_colors, *, lightness_range=(100 / 3, 200 / 3),
         if lightness_range is not None and \
                 not lightness_range[0] <= lightness <= lightness_range[1]:
             error_message = (
-                f'`first_color` has a lightness of {lightness}, outside the '
-                f'specified `lightness_range` of {lightness_range}')
+                f'first_color has a lightness of {lightness}, outside the '
+                f'specified lightness_range of {lightness_range}')
             raise ValueError(error_message)
         if chroma_range is not None and \
                 not chroma_range[0] <= chroma <= chroma_range[1]:
             error_message = (
-                f'`first_color` has a chroma of {chroma}, outside the '
-                f'specified `chroma_range` of {chroma_range}')
+                f'first_color has a chroma of {chroma}, outside the specified '
+                f'chroma_range of {chroma_range}')
             raise ValueError(error_message)
         if hue_range is not None and not (hue_range[0] <= hue <= hue_range[1]
                                           if hue_range[0] <= hue_range[1] else
                                           hue_range[0] <= hue or 
                                           hue <= hue_range[1]):
             error_message = (
-                f'`first_color` has a hue of {hue}, outside the specified '
-                f'`hue_range` of {hue_range}')
+                f'first_color has a hue of {hue}, outside the specified '
+                f'hue_range of {hue_range}')
             raise ValueError(error_message)
     # Check `stride`
     check_type(stride, 'stride', int, 'one of the integers 1, 3, 5, 15, or 17')
@@ -1647,10 +1877,12 @@ def manhattan_plot(sumstats, *, clumped_variants=None, genome_build=None,
                              used if genome_build is not None.
         text_overrides: A dictionary of {gene_name: label} used to override
                         specific gene labels.
-        gene_annotation_dir: The directory where the coding gene locations
+        gene_annotation_dir: the directory where the coding gene locations
                              returned by get_coding_genes() will be cached.
                              Must be run on the login node to generate this
-                             cache, if it doesn't exist.
+                             cache, if it doesn't exist. Because generating the
+                             cache can take a long time, you will probably want
+                             to leave this argument at its default value.
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -1676,7 +1908,7 @@ def manhattan_plot(sumstats, *, clumped_variants=None, genome_build=None,
                       .pipe(standardize_chromosomes, omit_chr_prefix=True))\
         .with_columns(color=pl.col(chrom_col).cast(pl.Categorical)
                       .to_physical().mod(2)
-                      .replace({0: '#0A6FA5', 1: '#008FCD'}))
+                      .replace_strict({0: '#0A6FA5', 1: '#008FCD'}))
     # Get the total number of bps to the start and end of each chromosome
     cumulative_bp = sumstats\
         .group_by(chrom_col, maintain_order=True)\
@@ -1725,9 +1957,9 @@ def manhattan_plot(sumstats, *, clumped_variants=None, genome_build=None,
                           SNP_col=SNP_col, chrom_col=chrom_col, bp_col=bp_col,
                           gene_annotation_dir=gene_annotation_dir),
                     on=(SNP_col, chrom_col, bp_col), how='left'))\
-                .drop_nulls('nearest_genes')
-            for genes, x, y in zip(lead_sumstats['nearest_genes'],
-                                   lead_sumstats['x'], lead_sumstats['y']):
+                .drop_nulls('gene')
+            for genes, x, y in zip(lead_sumstats['gene'], lead_sumstats['x'],
+                                   lead_sumstats['y']):
                 genes = ', '.join(genes)
                 plt.text(*plt.gca().transData.inverted().transform(
                     plt.gca().transData.transform([x, y]) + 
@@ -1769,7 +2001,8 @@ def qqplot(ps, *, equal_aspect=True, **kwargs):
     ax.scatter(-np.log10(ppoints(len(ps))),
                -np.log10(np.sort(ps).clip(5e-324)),
                edgecolors='none', rasterized=rasterized, **kwargs)
-    ax.plot([0, (xmax := ax.get_xlim()[1])], [0, xmax], c='k', zorder=-1)
+    xmax = ax.get_xlim()[1]
+    ax.plot([0, xmax], [0, xmax], c='k', zorder=-1)
     if equal_aspect:
         ax.set_aspect('equal')
     ax.set_xlim(0)
@@ -1820,7 +2053,8 @@ def bonferroni(pvalues):
         Bonferroni-corrected p-values; same type as pvalues.
     """
     if isinstance(pvalues, (pl.Series, pl.Expr)):
-        return (pvalues * (pvalues.len() - pvalues.null_count())).clip_max(1)
+        return (pvalues * (pvalues.len() - pvalues.null_count()))\
+            .clip(upper_bound=1)
     import numpy as np
     if not isinstance(pvalues, np.ndarray):
         raise ValueError('pvalues must be a polars Series or expression or a '
@@ -1928,7 +2162,7 @@ def fisher(table):
     import numpy as np
     table = np.asarray(table)
     assert table.shape == (2, 2)
-    from src.ryp import to_py, to_r
+    from ryp import to_py, to_r
     to_r(table, 'table', format='matrix')
     result = to_py('fisher.test(table)')
     OR = result['estimate']
@@ -2045,7 +2279,7 @@ def z_to_p(z_scores, *, high_precision=False):
     """
     import numpy as np
     if high_precision:
-        from src.ryp import to_py, to_r
+        from ryp import to_py, to_r
         to_r(np.abs(z_scores), 'abs.z')
         pvalues = 2 * np.exp(np.float128(to_py(
             'pnorm(abs.z, lower.tail=False, log.p=True)')))
@@ -2117,8 +2351,10 @@ def cov(X, Y=None, *, rowvar=False, ddof=1):
     if Y is not None:
         assert type(X) is type(Y), \
             f'type(X) = {type(X).__name__}, type(Y) = {type(Y).__name__}'
-        assert len(X.shape) == len(Y.shape) == 2, f'{X.shape=}, {Y.shape=}'
-        assert X.shape[rowvar] == Y.shape[rowvar], f'{X.shape=}, {Y.shape=}'
+        assert len(X.shape) == len(Y.shape) == 2, \
+            f'X.shape = {X.shape:,}, Y.shape = {Y.shape:,}'
+        assert X.shape[rowvar] == Y.shape[rowvar], \
+            f'X.shape = {X.shape:,}, Y.shape = {Y.shape:,}'
     # a) Transpose if rowvar=False
     if not rowvar:
         X = X.T
@@ -2162,8 +2398,10 @@ def cor(X, Y=None, *, rowvar=False, return_p=False, ddof=1):
     if Y is not None:
         assert type(X) is type(Y), \
             f'type(X) = {type(X).__name__}, type(Y) = {type(Y).__name__}'
-        assert len(X.shape) == len(Y.shape) == 2, f'{X.shape=}, {Y.shape=}'
-        assert X.shape[rowvar] == Y.shape[rowvar], f'{X.shape=}, {Y.shape=}'
+        assert len(X.shape) == len(Y.shape) == 2, \
+            f'X.shape = {X.shape:,}, Y.shape = {Y.shape:,}'
+        assert X.shape[rowvar] == Y.shape[rowvar], \
+            f'X.shape = {X.shape:,}, Y.shape = {Y.shape:,}'
     # a) Calculate covariance
     c = cov(X, Y, rowvar=rowvar, ddof=ddof)
     # b) Convert to correlation
@@ -2257,7 +2495,7 @@ def upper_triangle_to_square(array, *, include_diagonal=True, mirror=False):
     # 2) include_diagonal=False: U = N(N - 1) / 2 = 0.5N^2 - 0.5N
     #    --> by the quadratic formula, N = (sqrt(8U + 1) + 1) / 2
     N = (np.sqrt(8 * len(array) + 1) + (-1 if include_diagonal else 1)) / 2
-    assert N == int(N), f'Array is the wrong length ({len(array)}) to be ' \
+    assert N == int(N), f'Array is the wrong length ({len(array):,}) to be ' \
                         f'the upper diagonal portion of a square matrix'
     N = int(N)
     square = np.full((N, N), np.nan)
@@ -2412,6 +2650,253 @@ def whiten(X, method='Cholesky'):
     return whitened_X
 
 
+def sparse_matrix_vector_op(sparse_matrix, op, vector, *, axis, inplace=False,
+                            return_dtype=None, upcast_float32=True,
+                            num_threads=1):
+    """
+    Apply an elementwise arithmetic operation to a sparse array/matrix and a
+    vector, either rowwise or columnwise.
+    
+    Args:
+        sparse_matrix: a CSR or CSC sparse array or matrix
+        op: the operation to perform, as a string; must be one of:
+            '+', '-', '*', '/', '//', '**', '%'
+        vector: a 1D numeric vector
+        axis: the axis to perform the operation across: columnwise (`axis=0`)
+              or rowwise (`axis=1`)
+        inplace: whether to perform the operation in place; will give an error
+                 if `sparse_matrix` has integer dtype and the result of the
+                 operation would be floating-point
+        return_dtype: the data type of the output matrix; if None, will be
+                      inferred automatically
+        upcast_float32: whether to automatically upcast the output to float64
+                        when it would otherwise be float32 (i.e. when
+                        `sparse_matrix` and/or 'vector' are float32 and op is
+                        not `'//'`) and inplace=False; has no effect otherwise.
+                        Overridden by `dtype`, if specified.
+        num_threads: the number of threads to use for the operation. Set
+                     `num_threads=None` to use all available cores (as
+                     determined by `os.cpu_count()`).
+    
+    Returns:
+        A sparse matrix with the result of the operation, or None if
+        `inplace=True`.
+    """
+    import numpy as np
+    from scipy.sparse import csc_array, csr_array, csc_matrix, csr_matrix
+    # Check inputs
+    check_type(sparse_matrix, 'sparse_matrix',
+               (csc_array, csr_array, csc_matrix, csr_matrix),
+               'a sparse matrix')
+    valid_ops = '+', '-', '*', '/', '//', '**', '%'
+    if op not in valid_ops:
+        check_type(op, 'op', str, 'a string representing a Python operator')
+        error_message = \
+            f'op must be one of these operators: {", ".join(valid_ops)}'
+        raise ValueError(error_message)
+    check_type(vector, 'vector', np.ndarray, 'a NumPy array')
+    if vector.ndim != 1:
+        error_message = \
+            f'vector must be 1-dimensional, not {vector.ndim:,}-dimensional'
+        raise ValueError(error_message)
+    if axis != 0 and axis != 1:
+        check_type(axis, 'axis', int, 'one of the integers 0 or 1')
+        error_message = f'axis must be 0 or 1, not {axis}'
+        raise ValueError(error_message)
+    check_type(inplace, 'inplace', bool, 'boolean')
+    try:
+        np.dtype(return_dtype)
+    except TypeError as e:
+        error_message = 'return_dtype is not a valid NumPy data type'
+        raise TypeError(error_message) from e
+    check_type(upcast_float32, 'upcast_float32', bool, 'boolean')
+    if num_threads is None:
+        num_threads = os.cpu_count()
+    else:
+        check_type(num_threads, 'num_threads', int, 'a positive integer')
+        check_bounds(num_threads, 'num_threads', 1)
+    # Check dimensions
+    if len(vector) != sparse_matrix.shape[axis]:
+        error_message = (
+            f'shapes do not match: len(vector) is {len(vector):,}, but '
+            f'sparse_matrix.shape[{axis}] is {sparse_matrix.shape[axis]:,}')
+        if len(vector) == sparse_matrix.shape[1 - axis]:
+            error_message += (
+                f'; however, sparse_matrix.shape[{1 - axis}] is '
+                f'{sparse_matrix.shape[1 - axis]:,}, so perhaps you meant to '
+                f'specify axis={1 - axis} instead of axis={axis}?')
+        raise ValueError(error_message)
+    # Get the result's data type, if `return_dtype` is not specified
+    # (note: // always returns an integer dtype)
+    if return_dtype is None:
+        return_dtype = np.result_type(sparse_matrix.dtype, vector.dtype)
+        if op == '//' and np.issubdtype(return_dtype, np.floating):
+            return_dtype = np.int64
+        elif return_dtype == np.float32 and not inplace and upcast_float32:
+            return_dtype = np.float64
+    # Get `sparse_matrix`'s data, indices and indptr
+    data = sparse_matrix.data
+    indices = sparse_matrix.indices
+    indptr = sparse_matrix.indptr
+    prange_import = \
+        'from cython.parallel cimport prange' if num_threads > 1 else ''
+    # If in-place...
+    if inplace:
+        # Raise an error if the result's dtype would be different from
+        # `sparse_matrix`'s
+        if inplace and return_dtype != data.dtype:
+            error_message = (
+                f'sparse_matrix has data type {data.dtype!r}, but '
+                f'`sparse_matrix {op} vector` would have data type '
+                f'{return_dtype!r}, so inplace=True cannot be specified')
+            raise TypeError(error_message)
+        # Run the operation with Cython
+        if isinstance(sparse_matrix, (csc_array, csc_matrix)) == axis:
+            # Rowwise for CSR, or columnwise for CSC
+            cython_inline(f'''
+                {prange_import}
+                def run_op_inplace(
+                        {cython_type(data.dtype)}[::1] data,
+                        const {cython_type(indices.dtype)}[::1] indices,
+                        const {cython_type(indptr.dtype)}[::1] indptr,
+                        const {cython_type(vector.dtype)}[::1] vector,
+                        const unsigned int num_threads):
+                    cdef Py_ssize_t i, j
+                    for j in {prange('indptr.shape[0] - 1', num_threads)}:
+                        for i in range(indptr[j], indptr[j + 1]):
+                            data[i] {op}= vector[j]
+                ''')['run_op_inplace'](
+                    data, indices, indptr, vector, num_threads)
+        else:
+            # Rowwise for CSC, or columnwise for CSR
+            cython_inline(f'''
+                {prange_import}
+                def run_op_inplace(
+                        {cython_type(data.dtype)}[::1] data,
+                        const {cython_type(indices.dtype)}[::1] indices,
+                        const {cython_type(indptr.dtype)}[::1] indptr,
+                        const {cython_type(vector.dtype)}[::1] vector,
+                        const unsigned int num_threads):
+                    cdef Py_ssize_t i
+                    for i in {prange('data.shape[0]', num_threads)}:
+                        data[i] {op}= vector[indices[i]]
+                ''')['run_op_inplace'](
+                    data, indices, indptr, vector, num_threads)
+    # If not in-place...
+    else:
+        # Allocate the output sparse matrix/array's data array
+        result = np.empty_like(sparse_matrix.data, dtype=return_dtype)
+        # Get the Cython type of the result
+        result_cython_type = cython_type(return_dtype)
+        # Run the operation with Cython
+        if isinstance(sparse_matrix, (csc_array, csc_matrix)) == axis:
+            # Rowwise for CSR, or columnwise for CSC
+            cython_inline(rf'''
+                {prange_import}
+                def run_op(
+                        {cython_type(data.dtype)}[::1] data,
+                        const {cython_type(indices.dtype)}[::1] indices,
+                        const {cython_type(indptr.dtype)}[::1] indptr,
+                        const {cython_type(vector.dtype)}[::1] vector,
+                        {result_cython_type}[::1] result,
+                        const unsigned int num_threads):
+                    cdef Py_ssize_t i, j
+                    for j in {prange('indptr.shape[0] - 1', num_threads)}:
+                        for i in range(indptr[j], indptr[j + 1]):
+                            result[i] = \
+                                <{result_cython_type}> data[i] {op} vector[j]
+                ''')['run_op'](
+                    data, indices, indptr, vector, result, num_threads)
+        else:
+            # Rowwise for CSC, or columnwise for CSR
+            cython_inline(rf'''
+                {prange_import}
+                def run_op(
+                        const {cython_type(data.dtype)}[::1] data,
+                        const {cython_type(indices.dtype)}[::1] indices,
+                        const {cython_type(indptr.dtype)}[::1] indptr,
+                        const {cython_type(vector.dtype)}[::1] vector,
+                        {result_cython_type}[::1] result,
+                        const unsigned int num_threads):
+                    cdef Py_ssize_t i
+                    for i in {prange('data.shape[0]', num_threads)}:
+                        result[i] = <{result_cython_type}> data[i] {op} \
+                            vector[indices[i]]
+                ''')['run_op'](
+                    data, indices, indptr, vector, result, num_threads)
+        # Return a new sparse matrix/array with the result
+        return type(sparse_matrix)((result, indices, indptr),
+                                   shape=sparse_matrix.shape)
+
+    
+def bincount(x, *, num_bins, num_threads=1):
+    """
+    A faster version of `numpy.bincount` that uses a fixed number of bins,
+    lacks weights and supports multithreading.
+    
+    Args:
+        x: a 1D NumPy array
+        num_bins: the number of bins
+        num_threads: the number of threads to use when counting
+
+    Returns:
+        A 1D NumPy array of length `num_bins`, containing the bin counts.
+    """
+    import numpy as np
+    dtype = x.dtype
+    cython_dtype = cython_type(dtype)
+    counts = np.zeros(num_bins, dtype=np.int32)
+    prange_import = \
+        'from cython.parallel cimport prange' if num_threads > 1 else ''
+    cython_inline(f'''
+        {prange_import}
+        def bincount(const {cython_dtype}[::1] arr,
+                     int[::1] counts,
+                     const unsigned num_threads):
+            cdef long i
+            for i in {prange('arr.shape[0]', num_threads=num_threads)}:
+                counts[arr[i]] += 1
+        ''')['bincount'](arr=x, counts=counts, num_threads=num_threads)
+    return counts
+
+
+def getnnz(sparse_array, axis=None, num_threads=1):
+    """
+    Count the number of stored values in a sparse array, including explicitly
+    stored zeros. Matches the behavior of the now-deprecated getnnz() function
+    for scipy sparse arrays. To count the number of non-zero elements (i.e.
+    excluding explicitly stored zeros), use sparse_array.count_nonzero().
+    
+    Args:
+        sparse_array: a csr_array or csc_array
+        axis: whether to count the number of stored values in the whole array
+              (axis=None), within each column (axis=0), or within each row
+              (axis=1)
+        num_threads: the number of threads to use when counting; only used for
+                     csr when `axis` is 0 and for csc when `axis` is 1
+    
+    Returns:
+        The number of stored values, either as a scalar (if axis=None) or a 1D
+        array (if axis=0 or axis=1).
+    """
+    import numpy as np
+    from scipy.sparse import csr_array, csc_array
+    check_type(sparse_array, 'sparse_array', (csr_array, csc_array),
+               'a csr_array or csc_array')
+    if axis is None:
+        return sparse_array.nnz
+    elif axis != 0 and axis != 1:
+        error_message = 'axis must be 0, 1, or None'
+        raise ValueError(error_message)
+    is_csr = isinstance(sparse_array, csr_array)
+    if axis == is_csr:
+        return np.diff(sparse_array.indptr)
+    else:
+        return bincount(sparse_array.indices,
+                        num_bins=sparse_array.shape[is_csr],
+                        num_threads=num_threads)
+
+    
 ###############################################################################
 # [7] Regression
 ###############################################################################
@@ -2472,7 +2957,7 @@ def linear_regression(X, y, *, add_intercept=True, report_intercept=False,
 
 def logistic_regression(X, y, *, add_intercept=True, report_intercept=False,
                         return_significance=True, return_residuals=False,
-                        max_iter=100, num_threads=os.cpu_count()):
+                        max_iter=100, num_threads=1):
     """
     A fast logistic regression implementation that calculate CIs and p-values.
     
@@ -2494,8 +2979,8 @@ def logistic_regression(X, y, *, add_intercept=True, report_intercept=False,
         return_residuals: if True, also returns the residuals
         max_iter: the maximum number of iterations for logistic regression
         num_threads: the number of threads used to compute losses and gradients
-                     for logistic regression; 40 (the number of actual cores)
-                     seems faster than 80 (the number of hyperthreads)
+                     for logistic regression; set `num_threads=None` to use all
+                     available cores (as determined by `os.cpu_count()`)
     Returns:
         A polars DataFrame or NumPy array (whichever type X is) with one
         row per feature (column of X) and the following columns:
@@ -2526,6 +3011,8 @@ def logistic_regression(X, y, *, add_intercept=True, report_intercept=False,
     # >>> pearsonr(logistic_regression(X, y)['p'],
     #              sm.Logit(y, sm.add_constant(X)).fit().pvalues[1:])
     # PearsonRResult(statistic=0.9999999997299595, pvalue=0.0)
+    if num_threads is None:
+        num_threads = os.cpu_count()
     return GLM(X, y, logistic=True, add_intercept=add_intercept,
                report_intercept=report_intercept,
                return_significance=return_significance,
@@ -2535,7 +3022,7 @@ def logistic_regression(X, y, *, add_intercept=True, report_intercept=False,
 
 def GLM(X, y, *, logistic=False, add_intercept=True, report_intercept=False,
         return_significance=True, return_residuals=False, max_iter=100,
-        num_threads=os.cpu_count()):
+        num_threads=1):
     """
     A fast linear and logistic regression implementation that calculate CIs and
     p-values.
@@ -2560,9 +3047,8 @@ def GLM(X, y, *, logistic=False, add_intercept=True, report_intercept=False,
         return_residuals: if True, also returns the residuals
         max_iter: the maximum number of iterations for logistic regression
         num_threads: the number of threads used to compute losses and gradients
-                     for logistic regression; on Niagara, 40 (the number of
-                     actual cores) seems faster than 80 (the number of
-                     hyperthreads)
+                     for logistic regression; set `num_threads=None` to use all
+                     available cores (as determined by `os.cpu_count()`)
     Returns:
         A polars DataFrame with one row per feature (column of X) and the
         following columns:
@@ -2600,7 +3086,8 @@ def GLM(X, y, *, logistic=False, add_intercept=True, report_intercept=False,
     assert not np.isnan(X).any()
     assert not np.isnan(y).any()
     assert np.linalg.matrix_rank(X) == min(X.shape), \
-        f'{np.linalg.matrix_rank(X)=} < {min(X.shape)=}'
+        f'np.linalg.matrix_rank(X) ({np.linalg.matrix_rank(X)}) < ' \
+        f'min(X.shape) ({min(X.shape)})'
     if report_intercept and not add_intercept:
         raise ValueError("add_intercept is False, so report_intercept must "
                          "also be False since there's no intercept to report!")
@@ -2613,6 +3100,8 @@ def GLM(X, y, *, logistic=False, add_intercept=True, report_intercept=False,
         loss_out = np.empty(len(y))
         gradient_out = np.empty(len(y))
         y = y.astype(float)
+        if num_threads is None:
+            num_threads = os.cpu_count()
         
         def loss_and_gradient(beta, X, y):
             loss, grad_pointwise = base_loss_and_gradient(
@@ -2749,7 +3238,8 @@ def linear_regressions(X, Y, *, add_intercept=True, report_intercept=False,
     assert not np.isnan(X).any()
     assert not np.isnan(Y).any()
     assert np.linalg.matrix_rank(X) == min(X.shape), \
-        f'{np.linalg.matrix_rank(X)=} < {min(X.shape)=}'
+        f'np.linalg.matrix_rank(X) ({np.linalg.matrix_rank(X)}) < ' \
+        f'min(X.shape) ({min(X.shape)})'
     assert covariance is None or whitening_matrix is None
     if report_intercept and not add_intercept:
         raise ValueError("add_intercept is False, so report_intercept must "
@@ -2843,40 +3333,42 @@ def lstsq(X, Y):
         else:
             assert rank < X.shape[1]
             message = (
-                f'X has {X.shape[1]} features but only {rank} are linearly '
-                f'independent; this means one or more of the columns in X are '
-                f'a linear combination of one or more of the other columns. ')
+                f'X has {X.shape[1]:,} features but only {rank:,} are '
+                f'linearly independent; this means one or more of the columns '
+                f'in X are a linear combination of one or more of the other '
+                f'columns. ')
             if rank == len(X) < X.shape[1]:
                 message += (
                     f'In your case, this is entirely because there are only '
-                    f'{len(X)} observations, so there are fewer observations '
-                    f'than features! Did you mix up which dimension contains '
-                    f'your features and which contains your observations? '
-                    f'You may need to transpose X.')
+                    f'{len(X):,} observations, so there are fewer '
+                    f'observations than features! Did you mix up which '
+                    f'dimension contains your features and which contains '
+                    f'your observations? You may need to transpose X.')
             elif rank < len(X) < X.shape[1]:
                 message += (
                     f'In your case, this is partly because there are only '
-                    f'{len(X)} observations, so there are fewer observations '
-                    f'than features! Did you mix up which dimension contains '
-                    f'your features and which contains your observations? '
-                    f'You may need to transpose X. However, there are even'
-                    f'fewer independent features ({rank}) than observations '
-                    f'({len(X)}). Did you include the same column twice? Two '
-                    f'intercepts? Did you forget to drop one of the levels of '
-                    f'a one-hot encoded categorical variable, say by calling '
+                    f'{len(X):,} observations, so there are fewer '
+                    f'observations than features! Did you mix up which '
+                    f'dimension contains your features and which contains '
+                    f'your observations? You may need to transpose X. '
+                    f'However, there are even fewer independent features '
+                    f'({rank:,}) than observations ({len(X):,}). Did you '
+                    f'include the same column twice? Two intercepts? Did you '
+                    f'forget to drop one of the levels of a one-hot encoded '
+                    f'categorical variable, say by calling '
                     f'pl.DataFrame.to_dummies() without drop_first=True?')
             else:
                 assert len(X) < rank < X.shape[1] or \
                        rank < len(X) == X.shape[1]
                 message += (
                     f'In your case, this is not explained by having fewer '
-                    f'observations ({len(X)}) than features ({X.shape[1]}). '
-                    f'Are your data points constant (and therefore collinear '
-                    f'with the intercept)? Did you include the same column '
-                    f'twice? Two intercepts? Did you forget to drop one of '
-                    f'the levels of a one-hot encoded categorical variable, '
-                    f'say by calling pl.DataFrame.to_dummies() without '
-                    f'drop_first=True?')
+                    f'observations ({len(X):,}) than features '
+                    f'({X.shape[1]:,}). Are your data points constant (and '
+                    f'therefore collinear with the intercept)? Did you '
+                    f'include the same column twice? Two intercepts? Did you '
+                    f'forget to drop one of the levels of a one-hot encoded '
+                    f'categorical variable, say by calling '
+                    f'pl.DataFrame.to_dummies() without drop_first=True?')
             raise ValueError(message)
     return beta, residuals, rank, singular_values
 
@@ -3024,7 +3516,8 @@ def correlate(X, Y=None, *, rank=False, GLS=False, covariates=None,
     assert X.ndim == 2, X.ndim
     assert not np.isnan(X).any()
     assert np.linalg.matrix_rank(X) == min(X.shape), \
-        f'{np.linalg.matrix_rank(X)=} < {min(X.shape)=}'
+        f'np.linalg.matrix_rank(X) ({np.linalg.matrix_rank(X)}) < ' \
+        f'min(X.shape) ({min(X.shape)})'
     if Y is not None:
         assert isinstance(Y, np.ndarray), type(Y)
         assert np.issubdtype(Y.dtype, np.number), Y.dtype
@@ -3038,7 +3531,9 @@ def correlate(X, Y=None, *, rank=False, GLS=False, covariates=None,
         assert len(covariates) == len(X), (len(covariates), len(X))
         assert not np.isnan(covariates).any()
         assert np.linalg.matrix_rank(covariates) == min(covariates.shape), \
-            f'{np.linalg.matrix_rank(covariates)=} < {min(covariates.shape)=}'
+            f'np.linalg.matrix_rank(covariates) ' \
+            f'({np.linalg.matrix_rank(covariates)}) < min(covariates.shape) ' \
+            f'({min(covariates.shape)})'
     # Define namedtuple to store this function's return values
     from collections import namedtuple
     CorrelationResult = namedtuple('CorrelationResult', ('correlation', 'p'))
@@ -3051,7 +3546,7 @@ def correlate(X, Y=None, *, rank=False, GLS=False, covariates=None,
     # If include_PCs=True, include the top N PCs as covariates
     if include_PCs:
         assert Y is None  # not implemented
-        from src.ryp import r, to_py, to_r
+        from ryp import r, to_py, to_r
         # r('source("https://raw.githubusercontent.com/heatherjzhou/PCAForQTL/"
         #           "master/R/22.01.04_main1.1_runElbow.R")')
         r('runElbow<-function(X=NULL,prcompResult=NULL){if(is.null(prcompResul'
@@ -3305,9 +3800,12 @@ def load_alias_to_gene_map(gene_annotation_dir=f'{get_base_data_directory()}/'
     conditions below.
     
     Args:
-        gene_annotation_dir: The directory where the alias-to-gene map will be
+        gene_annotation_dir: the directory where the alias-to-gene map will be
                              cached. Must be run on the login node to generate
-                             this cache, if it doesn't exist.
+                             this cache, if it doesn't exist. Because
+                             generating the cache can take a long time, you
+                             will probably want to leave this argument at its
+                             default value.
 
     Returns:
         A two-column DataFrame with old gene names in the "alias" column and
@@ -3344,6 +3842,7 @@ def unalias(df, gene_col, *,
     current gene names, according to the map returned by
     load_alias_to_gene_map().
     
+    Before matching a gene list from a third-party dataset
     Before matching gene lists from two third-party datasets to each other, run
     them both through this function. You don't have to run this on the result
     of Ensembl_to_gene(), though.
@@ -3351,10 +3850,12 @@ def unalias(df, gene_col, *,
     Args:
         df: a polars DataFrame
         gene_col: the name of the column with the gene names to be unaliased
-        gene_annotation_dir: The directory where the alias-to-gene map returned
+        gene_annotation_dir: the directory where the alias-to-gene map returned
                              by load_alias_to_gene_map() will be cached. Must
                              be run on the login node to generate this cache,
-                             if it doesn't exist.
+                             if it doesn't exist. Because generating the cache
+                             can take a long time, you will probably want to
+                             leave this argument at its default value.
 
     Returns:
         df with each matching gene name in gene_col mapped to its alias. gene
@@ -3383,9 +3884,12 @@ def get_Ensembl_map(ENSP=False,
     Args:
         ENSP: whether to convert ENSPs (protein IDs) instead of ENSGs (gene
               IDs)
-        gene_annotation_dir: The directory where the Ensembl to gene symbol map
+        gene_annotation_dir: the directory where the Ensembl to gene symbol map
                              will be cached. Must be run on the login node to
-                             generate this cache, if it doesn't exist.
+                             generate this cache, if it doesn't exist. Because
+                             generating the cache can take a long time, you
+                             will probably want to leave this argument at its
+                             default value.
         no_unaliasing: if True, gene names will not be unalised
     Returns:
         A two-column polars DataFrame with an "Ensembl_ID" column containing
@@ -3399,10 +3903,10 @@ def get_Ensembl_map(ENSP=False,
         print(f'Generating "{mapping_file}"...')
         raise_error_if_on_compute_node()
         os.makedirs(gene_annotation_dir, exist_ok=True)
-        latest_Ensembl_version = int(run(
+        latest_Ensembl_version = max(map(int, run(
             'curl -fsSL https://ftp.ensembl.org/pub/current_gtf/'
             'homo_sapiens/ | grep -oP "GRCh38\\.\\K[0-9]{3}" | uniq',
-            stdout=subprocess.PIPE).stdout)
+            stdout=subprocess.PIPE).stdout.split()))
         get_build = lambda i: "GRCh38" if i in range(76, 82) else "GRCh37" \
             if i in range(55, 76) else "NCBI36"
         GTF_basenames = [
@@ -3448,7 +3952,7 @@ def get_Ensembl_map(ENSP=False,
     return pl.read_csv(mapping_file, separator='\t', has_header=False,
                        new_columns=['Ensembl_ID', 'gene_name',
                                     'most_recent_Ensembl_version'],
-                       comment_char='#')\
+                       comment_prefix='#')\
         .pipe(lambda df: df if no_unaliasing else unalias(
             df, 'gene_name', gene_annotation_dir=gene_annotation_dir))
 
@@ -3468,10 +3972,12 @@ def Ensembl_to_gene(df, Ensembl_ID_col, *, ENSP=False,
         Ensembl_ID_col: the name of the column with the Ensembl IDs
         ENSP: whether Ensembl_ID_col contains ENSPs (protein IDs) instead of
               ENSGs (gene IDs)
-        gene_annotation_dir: The directory where the Ensembl to gene symbol map
+        gene_annotation_dir: the directory where the Ensembl to gene symbol map
                              returned by get_Ensembl_map() will be cached. Must
                              be run on the login node to generate this cache,
-                             if it doesn't exist.
+                             if it doesn't exist. Because generating the cache
+                             can take a long time, you will probably want to
+                             leave this argument at its default value.
 
     Returns:
         df with the Ensembl IDs in Ensembl_ID_col replaced with gene symbols;
@@ -3557,7 +4063,7 @@ def load_GO_terms(GO_term_dir=f'{get_base_data_directory()}/GO-terms',
                 f'-P {GO_term_dir}')
         GO_terms = pl.read_csv(GO_file, separator='\t', has_header=False,
                                columns=[2, 4], new_columns=['gene', 'ID'],
-                               comment_char='!').drop_nulls()
+                               comment_prefix='!').drop_nulls()
         obo_file_contents = open(obo_file).read()
         alt_ID_to_ID_map = {}
         for line in obo_file_contents.splitlines():
@@ -3586,8 +4092,8 @@ def load_GO_terms(GO_term_dir=f'{get_base_data_directory()}/GO-terms',
         obo_graph = obonet.read_obo(StringIO(obo_file_contents))
         get_parents = cache(lambda GO_term: [GO_term] + list(
             nx.descendants(obo_graph, GO_term)))
-        GO_terms = GO_terms.with_columns(pl.col.ID.map_elements(get_parents))\
-            .explode('ID')
+        GO_terms = GO_terms.with_columns(pl.col.ID.map_elements(
+            get_parents, return_dtype=pl.List(pl.String))).explode('ID')
         # Join with names
         GO_terms = GO_terms.join(GO_to_name, on='ID')
         # Drop duplicates
@@ -3638,9 +4144,12 @@ def liftover(infile, outfile, *, input_genome_build='hg38',
         log_file: an optional log file location
         bash_input: if True, infile must be a bash command that outputs to
                     stdout, instead of a file.
-        gene_annotation_dir: The directory where the liftOver chain file will
+        gene_annotation_dir: the directory where the liftOver chain file will
                              be cached. Must be run on the login node to
-                             generate this cache, if it doesn't exist.
+                             generate this cache, if it doesn't exist. Because
+                             generating the cache can take a long time, you
+                             will probably want to leave this argument at its
+                             default value.
     """
     check_valid_genome_build(input_genome_build)
     check_valid_genome_build(output_genome_build)
@@ -3678,7 +4187,7 @@ def get_gencode_version():
     return gencode_version
 
 
-def get_coding_genes(genome_build='hg38', gencode_version=45,
+def get_coding_genes(genome_build='hg38', gencode_version=46,
                      gene_annotation_dir=f'{get_base_data_directory()}/'
                                          f'gene-annotations',
                      return_file=False):
@@ -3689,16 +4198,19 @@ def get_coding_genes(genome_build='hg38', gencode_version=45,
     Args:
         genome_build: the genome build (hg19 or hg38) to get coordinates for
         gencode_version: the Gencode version to take coding genes from
-        gene_annotation_dir: The directory where a BED file of the coding genes
+        gene_annotation_dir: the directory where a BED file of the coding genes
                              will be cached. Must be run on the login node to
-                             generate this cache, if it doesn't exist.
+                             generate this cache, if it doesn't exist. Because
+                             generating the cache can take a long time, you
+                             will probably want to leave this argument at its
+                             default value.
         return_file: If True, return a BED file path instead of a DataFrame.
-                     Note: the start coordinates in the bed file are one less
-                     than in the returned DataFrame, because bed files are
+                     Note: the start coordinates in the BED file are one less
+                     than in the returned DataFrame, because BED files are
                      0-based while the returned DataFrame (and most sumstats)
                      are 1-based.
     Returns:
-        A DataFrame with chrom, start, end, strand, gene, and Ensembl_IDs
+        A DataFrame with chrom, start, end, strand, gene, and Ensembl_IDs as
         columns, or a BED file of the same if return_file=True. The gene names
         are unaliased with unalias(), so you don't have to run unalias() again.
         Genes in the pseudoautosomal regions have chrX as their chromosome.
@@ -3713,7 +4225,7 @@ def get_coding_genes(genome_build='hg38', gencode_version=45,
             coding_genes_file, separator='\t', has_header=False,
             new_columns=['chrom', 'start', 'end', 'strand', 'gene',
                          'Ensembl_IDs'])\
-            .with_columns(pl.col.start + 1,  # convert bed to one-based
+            .with_columns(pl.col.start + 1,  # convert BED to one-based
                           pl.col.Ensembl_IDs.str.split(','))
     os.makedirs(gene_annotation_dir, exist_ok=True)
     coding_genes_intermediate_file = \
@@ -3739,22 +4251,21 @@ def get_coding_genes(genome_build='hg38', gencode_version=45,
         new_columns=['chrom', 'start', 'end', 'strand', 'gene',
                      'Ensembl_IDs'])\
         .filter(pl.col.chrom != 'chrM')\
-        .with_columns(pl.col.Ensembl_IDs.str.split_exact('.', 1))\
-        .unnest('Ensembl_IDs')\
-        .drop('field_1')\
-        .rename({'field_0': 'Ensembl_IDs'})\
+        .with_columns(Ensembl_IDs=pl.col.Ensembl_IDs.str.split_exact('.', 1)
+                      .struct.field('field_0'))\
         .collect()
     # For hg19, 7 coding genes were subsequently merged into another gene
     # (PRAMEF21 -> PRAMEF20, NBPF16 -> NBPF15, FOXD4L2 -> FOXD4L4,
     # MRC1L1 -> MRC1, ANXA8L2 -> ANXA8L1, ASAH2C -> ASAH2B, CT45A4 -> CT45A3);
     # to avoid the same gene being present in two different locations, do NOT
-    # unalias. For hg38, all genes should have the most current names.
+    # unalias. Also, for both hg19 and hg38, ZNF475 is an alias of ZFP1, but
+    # also a gene in its own right; we can similarly ignore the alias.
     assert len(coding_genes
                .with_columns(unaliased_gene='gene')
                .pipe(unalias, 'unaliased_gene',
                      gene_annotation_dir=gene_annotation_dir)
                .filter(pl.col.unaliased_gene != pl.col.gene)) == \
-           (0 if genome_build == 'hg38' else 7)
+           (1 if genome_build == 'hg38' else 8)
     # No genes should have more than one chromosome, except those in the
     # pseudoautosomal regions
     chrX_PAR1_end = 2_781_479 if genome_build == 'hg38' else 2_699_520
@@ -3797,7 +4308,7 @@ def get_coding_genes(genome_build='hg38', gencode_version=45,
         coding_genes.with_columns(pl.col.start + 1)
 
 
-def get_coding_TSSs(genome_build='hg38', gencode_version=45,
+def get_coding_TSSs(genome_build='hg38', gencode_version=46,
                     gene_annotation_dir=f'{get_base_data_directory()}/'
                                         f'gene-annotations',
                     return_file=False):
@@ -3809,18 +4320,21 @@ def get_coding_TSSs(genome_build='hg38', gencode_version=45,
     Args:
         genome_build: the genome build (hg19 or hg38) to get coordinates for
         gencode_version: the Gencode version to take coding genes from
-        gene_annotation_dir: The directory where a BED file of the coding TSSs
+        gene_annotation_dir: the directory where a BED file of the coding TSSs
                              will be cached. Must be run on the login node to
-                             generate this cache, if it doesn't exist.
+                             generate this cache, if it doesn't exist. Because
+                             generating the cache can take a long time, you
+                             will probably want to leave this argument at its
+                             default value.
         return_file: If True, return a BED file path instead of a DataFrame.
                      The BED file will have start = bp - 1 and end = bp, since
-                     bed files are 0-based while the returned DataFrame (and
+                     BED files are 0-based while the returned DataFrame (and
                      most sumstats) are 1-based.
     Returns:
-        A DataFrame with chrom, bp, strand, gene, and Ensembl_ID columns, or a
-        BED file of the same if return_file=True. The gene names are unaliased
-        with unalias(), so you don't have to run unalias() again. Genes in the
-        pseudoautosomal regions have chrX as their chromosome.
+        A DataFrame with chrom, bp, strand, gene, and Ensembl_ID as columns, or
+        a BED file of the same if return_file=True. The gene names are
+        unaliased with unalias(), so you don't have to run unalias() again.
+        Genes in the pseudoautosomal regions have chrX as their chromosome.
     """
     check_valid_genome_build(genome_build)
     coding_TSSs_file = f'{gene_annotation_dir}/coding_TSSs_{genome_build}_' \
@@ -3857,22 +4371,21 @@ def get_coding_TSSs(genome_build='hg38', gencode_version=45,
         coding_TSSs_intermediate_file, separator='\t', has_header=False,
         new_columns=['chrom', 'start', 'end', 'strand', 'gene', 'Ensembl_ID'])\
         .filter(pl.col.chrom != 'chrM')\
-        .with_columns(pl.col.Ensembl_ID.str.split_exact('.', 1))\
-        .unnest('Ensembl_ID')\
-        .drop('field_1')\
-        .rename({'field_0': 'Ensembl_ID'})\
+        .with_columns(Ensembl_IDs=pl.col.Ensembl_IDs.str.split_exact('.', 1)
+                      .struct.field('field_0'))\
         .collect()
     # For hg19, 7 coding genes were subsequently merged into another gene
     # (PRAMEF21 -> PRAMEF20, NBPF16 -> NBPF15, FOXD4L2 -> FOXD4L4,
     # MRC1L1 -> MRC1, ANXA8L2 -> ANXA8L1, ASAH2C -> ASAH2B, CT45A4 -> CT45A3);
     # to avoid the same gene being present in two different locations, do NOT
-    # unalias. For hg38, all genes should have the most current names.
+    # unalias. Also, for both hg19 and hg38, ZNF475 is an alias of ZFP1, but
+    # also a gene in its own right; we can similarly ignore the alias.
     assert len(coding_TSSs
                .with_columns(unaliased_gene='gene')
                .pipe(unalias, 'unaliased_gene',
                      gene_annotation_dir=gene_annotation_dir)
                .filter(pl.col.unaliased_gene != pl.col.gene)
-               .unique('gene')) == (0 if genome_build == 'hg38' else 7)
+               .unique('gene')) == (1 if genome_build == 'hg38' else 8)
     # No TSSs should have more than one chromosome, except those in the
     # pseudoautosomal regions
     chrX_PAR1_end = 2_781_479 if genome_build == 'hg38' else 2_699_520
@@ -3905,7 +4418,7 @@ def get_coding_TSSs(genome_build='hg38', gencode_version=45,
 ###############################################################################
 
 
-def get_nearest_gene(sumstats, genome_build, *, gencode_version=45,
+def get_nearest_gene(sumstats, genome_build, *, gencode_version=46,
                      SNP_col='SNP', chrom_col='CHROM', bp_col='BP',
                      gene_col='gene', gene_distance_col='gene_distance',
                      TSS_col='TSS', TSS_distance_col='TSS_distance', TSS=None,
@@ -3928,30 +4441,32 @@ def get_nearest_gene(sumstats, genome_build, *, gencode_version=45,
         SNP_col: the name of the variant ID column in sumstats
         chrom_col: the name of the chromosome column in sumstats
         bp_col: the name of the base-pair column in sumstats
-        gene_col: the name of the column to be added to sumstats containing the
+        gene_col: the name of the column in the output DataFrame containing the
                   gene symbol(s) of the nearest gene(s) to each variant, as a
                   list
-        gene_distance_col: the name of the column to be added to sumstats
+        gene_distance_col: the name of the column in the output DataFrame
                            containing the distance from each variant to (each
                            of) the nearest gene(s) in gene_col, as a list. The
                            distance is 0 if the variant is inside the gene
                            (i.e. between the TSS and TES), and the distance to
                            whichever of the TSS and TES is closer, otherwise.
-        TSS_col: the name of the column to be added to sumstats containing the
+        TSS_col: the name of the column in the output DataFrame containing the
                  gene symbol(s) of the gene(s) with the nearest TSS(s) to each
                  variant, as a list. For genes with multiple transcripts, only
                  the transcript(s) with the nearest TSS are counted.
-        TSS_distance_col: the name of the column to be added to sumstats
+        TSS_distance_col: the name of the column in the output DataFrame
                           containing the distance from each variant to the
                           TSS(s) of (each of) the gene(s) in TSS_col, as a list
         TSS: if None (the default), include both gene_col/gene_distance_col and
              TSS_col/TSS_distance_col in the output. If False, include only
              gene_col/gene_distance_col. If True, include only
              TSS_col/TSS_distance_col.
-        gene_annotation_dir: The directory where the coding gene locations
+        gene_annotation_dir: the directory where the coding gene locations
                              returned by get_coding_genes() will be cached.
                              Must be run on the login node to generate this
-                             cache, if it doesn't exist.
+                             cache, if it doesn't exist. Because generating the
+                             cache can take a long time, you will probably want
+                             to leave this argument at its default value.
         include_details: whether to include additional columns in the output:
             For nearest genes (TSS=False or TSS=None):
             - previous_gene_boundary: the base-pair position of the previous
@@ -3969,8 +4484,8 @@ def get_nearest_gene(sumstats, genome_build, *, gencode_version=45,
     
     Returns:
         A DataFrame with chrom_col, bp_col, gene_col/distance_col and/or
-        TSS_col/TSS_distance_col, and optionally the other columns above if
-        include_details=True.
+        TSS_col/TSS_distance_col columns, and optionally the other columns
+        above if include_details=True.
     """
     # Sanity-check inputs
     check_valid_genome_build(genome_build)
@@ -4035,7 +4550,7 @@ def get_nearest_gene(sumstats, genome_build, *, gencode_version=45,
                   .lazy()
                   .with_row_index()
                   .explode('gene')
-                  .groupby('gene')
+                  .group_by('gene')
                   .agg(pl.col.index.min().alias('min_index'),
                        pl.col.index.max().alias('max_index'))
                   .with_columns(pl.int_ranges(
@@ -4043,7 +4558,7 @@ def get_nearest_gene(sumstats, genome_build, *, gencode_version=45,
                       dtype=pl.UInt32).alias('index'))
                   .drop('min_index', 'max_index')
                   .explode('index')
-                  .groupby('index')
+                  .group_by('index')
                   .agg('gene'),
                   on='index')\
             .sort('index')\
@@ -4114,10 +4629,14 @@ def get_nearest_gene(sumstats, genome_build, *, gencode_version=45,
                 .select(SNP_col, chrom_col, bp_col, gene_col,
                         gene_distance_col)
     if include_nearest_TSS:
-        # Get coding TSSs
+        # Get coding TSSs; note that since no genes share a TSS, we do not need
+        # to group_by(chrom_col, bp_col).agg('gene') as we did for
+        # gene_boundaries. Instead, just box each gene as a one-element list.
         coding_TSSs = get_coding_TSSs(
             genome_build=genome_build, gencode_version=gencode_version,
-            gene_annotation_dir=gene_annotation_dir)
+            gene_annotation_dir=gene_annotation_dir)\
+            .with_columns(pl.col.gene.reshape((-1, 1))
+                          .cast(pl.List(pl.String)))
         # The logic for finding the nearest TSS is much simpler: just do two
         # asof joins to find the nearest TSS in each direction, then take the
         # closer of the two (or both, if equidistant)
@@ -4179,7 +4698,7 @@ def get_nearest_gene(sumstats, genome_build, *, gencode_version=45,
 
 
 def get_nearby_genes(sumstats, genome_build, cache_prefix, *,
-                     gencode_version=45, max_distance=500_000,
+                     gencode_version=46, max_distance=500_000,
                      SNP_col='SNP', chrom_col='CHROM', bp_col='BP',
                      gene_col='gene', gene_distance_col='gene_distance',
                      gene_annotation_dir=f'{get_base_data_directory()}/'
@@ -4189,35 +4708,39 @@ def get_nearby_genes(sumstats, genome_build, cache_prefix, *,
     bedtools window.
     
     Given a DataFrame of sumstats with columns SNP_col, chrom_col and bp_col,
-    returns a DataFrame with the same columns, plus two others, described
+    returns a DataFrame with these three columns plus two others, described
     below: gene_col and gene_distance_col.
         
     Args:
-        sumstats: the summary statistics, as a polars DataFrame
+        sumstats: the summary statistics, as a polars DataFrame. Sumstats must
+                   be sorted (this is not checked).
         genome_build: the genome build of sumstats
-        cache_prefix: the prefix of the location for bedtools window's results
-                      (e.g. 'file_prefix' or 'directory/file_prefix')
+        cache_prefix: the prefix of the location for the results of
+                      `bedtools window` (e.g. `'file_prefix'` or
+                      `'directory/file_prefix'`)
         gencode_version: the Gencode version to take coding genes from
         max_distance: the maximum distance from a variant to get nearby genes
         SNP_col: the name of the variant ID column in sumstats
         chrom_col: the name of the chromosome column in sumstats
         bp_col: the name of the base-pair column in sumstats
-        gene_col: the name of the column to be added to sumstats containing the
+        gene_col: the name of the column in the output DataFrame containing the
                   gene symbol of each nearby gene, as a list
-        gene_distance_col: the name of the column to be added to sumstats
+        gene_distance_col: the name of the column in the output DataFrame
                            containing the distance from the variant to each of
                            the nearby genes in gene_col, as a list. The
                            distance is 0 if the variant is inside the gene
                            (i.e. between the TSS and TES), and the distance to
                            whichever of the TSS and TES is closer, otherwise.
-        gene_annotation_dir: The directory where the coding gene locations
+        gene_annotation_dir: the directory where the coding gene locations
                              returned by get_coding_genes() will be cached.
                              Must be run on the login node to generate this
-                             cache, if it doesn't exist.
+                             cache, if it doesn't exist. Because generating the
+                             cache can take a long time, you will probably want
+                             to leave this argument at its default value.
     
     Returns:
-        A DataFrame with chrom_col, bp_col, gene_col, gene_distance_col, and
-        TSS_distance_col.
+        A DataFrame with SNP_col, chrom_col, bp_col, gene_col,
+        gene_distance_col, and TSS_distance_col columns.
     """
     # Sanity-check inputs
     check_valid_genome_build(genome_build)
@@ -4229,24 +4752,18 @@ def get_nearby_genes(sumstats, genome_build, cache_prefix, *,
         raise ValueError(f'{chrom_col!r} not in sumstats; specify chrom_col')
     if bp_col not in sumstats:
         raise ValueError(f'{bp_col!r} not in sumstats; specify bp_col')
-    if gene_col in sumstats:
-        raise ValueError(f'{gene_col!r} already in sumstats; specify a '
-                         f'different gene_col')
-    if gene_distance_col in sumstats:
-        raise ValueError(f'{gene_distance_col!r} already in sumstats; specify '
-                         f'a different gene_distance_col')
-    # Get coding genes bed file
+    # Get coding genes BED file
     coding_genes_bed_file = get_coding_genes(
         genome_build=genome_build, gencode_version=gencode_version,
         gene_annotation_dir=gene_annotation_dir, return_file=True)
-    # Make sumstats bed file
+    # Make sumstats BED file
     sumstats_bed_file = f'{cache_prefix}.sumstats.bed'
     sumstats\
         .with_columns(pl.col(chrom_col).pipe(standardize_chromosomes),
-                      pl.col(chrom_col).alias('original_chrom'))\
+                      original_chrom=pl.col(chrom_col))\
         .select(chrom_col, pl.col(bp_col).sub(1).alias('start'),
                 pl.col(bp_col).alias('end'), pl.col(SNP_col),
-                pl.col.original_chrom)\
+                'original_chrom')\
         .write_csv(sumstats_bed_file, separator='\t', include_header=False)
     # Run bedtools window
     nearby_genes_bed_file = f'{cache_prefix}.nearby_genes.bed'
@@ -4262,7 +4779,7 @@ def get_nearby_genes(sumstats, genome_build, cache_prefix, *,
                      '__get_nearby_genes_gene_end',
                      '__get_nearby_genes_gene_strand', gene_col,
                      '__get_nearby_genes_gene_Ensembl_ID'],
-        dtypes={chrom_col: sumstats[chrom_col].dtype})\
+        schema_overrides={chrom_col: sumstats[chrom_col].dtype})\
         .select(SNP_col, chrom_col, bp_col, gene_col,
                 pl.col.__get_nearby_genes_gene_start.add(1),
                 '__get_nearby_genes_gene_end')\
@@ -4292,6 +4809,131 @@ def get_nearby_genes(sumstats, genome_build, cache_prefix, *,
     return nearby_genes
 
 
+def get_nearest_variant(genes, sumstats, cache_prefix, *, gene_col='gene',
+                        gene_chrom_col='chrom', gene_start_col='start',
+                        gene_end_col='end', SNP_col='SNP',
+                        sumstats_chrom_col='CHROM', sumstats_bp_col='BP',
+                        distance_col='distance'):
+    """
+    The reverse of `get_nearest_gene()`: for each gene in `genes`, gets the
+    distance to the nearest variant in `sumstats` via `bedtools closest -d`.
+    Based on Caleb Ji's `get_gene_distances` function.
+    
+    Given a DataFrame of sumstats with columns `SNP_col`, `chrom_col` and
+    `bp_col`, and a DataFrame of genes with columns `gene_col`,
+    `gene_chrom_col`, `gene_start_col`, and `gene_end_col`, returns a DataFrame
+    with the four columns from the genes DataFrame plus two others: `SNP_col`,
+    the nearest variant, and `distance_col`, the distance from the gene to this
+    nearest variant.
+    
+    Args:
+        genes: the list of genes, as a polars DataFrame. Must be sorted (this
+               is not checked). To use all protein-coding genes, set
+               `genes=get_coding_genes(genome_build)`.
+        sumstats: the summary statistics, as a polars DataFrame. Must be sorted
+                  (this is not checked), and `genes` and `sumstats` must use
+                  the same genome build (this is also not checked).
+        cache_prefix: the prefix of the location for the results of
+                      `bedtools closest -d` (e.g. `'file_prefix'` or
+                      `'directory/file_prefix'`)
+        gene_col: the name of the gene symbol column in `genes`
+        gene_chrom_col: the name of the chromosome column in `genes`
+        gene_start_col: the name of the start column in `genes`
+        gene_end_col: the name of the end column in `genes`
+        SNP_col: the name of the variant ID column in `sumstats`.
+        sumstats_chrom_col: the name of the chromosome column in `sumstats`
+        sumstats_bp_col: the name of the base-pair column in `sumstats`
+        distance_col: the name of the column in the output DataFrame containing
+                      the distance from each gene to its nearest variant. The
+                      distance is 0 if the variant is inside the gene (i.e.
+                      between the TSS and TES), and the distance to whichever
+                      of the TSS and TES is closer, otherwise.
+    
+    Returns:
+        A DataFrame with `gene_col`, `gene_chrom_col`, `gene_start_col`,
+        `gene_end_col`, `SNP_col`, and `distance_col` columns. `SNP_col` and
+        `distance_col` will be `null` if the gene has no variants in `sumstats`
+        on the same chromosome.
+    """
+    # Sanity-check inputs
+    if genes.is_empty():
+        error_message = 'genes is empty!'
+        raise ValueError(error_message)
+    if gene_col not in genes:
+        error_message = f'{gene_col!r} not in genes; specify gene_col'
+        raise ValueError(error_message)
+    if gene_chrom_col not in genes:
+        error_message = \
+            f'{gene_chrom_col!r} not in genes; specify gene_chrom_col'
+        raise ValueError(error_message)
+    if gene_start_col not in genes:
+        error_message = \
+            f'{gene_start_col!r} not in genes; specify gene_start_col'
+        raise ValueError(error_message)
+    if gene_end_col not in genes:
+        error_message = f'{gene_end_col!r} not in genes; specify gene_end_col'
+        raise ValueError(error_message)
+    if sumstats.is_empty():
+        error_message = 'sumstats is empty!'
+        raise ValueError(error_message)
+    if SNP_col not in sumstats:
+        error_message = f'{SNP_col!r} not in sumstats; specify SNP_col'
+        raise ValueError(error_message)
+    if sumstats_chrom_col not in sumstats:
+        error_message = (
+            f'{sumstats_chrom_col!r} not in sumstats; specify '
+            f'sumstats_chrom_col')
+        raise ValueError(error_message)
+    if sumstats_bp_col not in sumstats:
+        error_message = \
+            f'{sumstats_bp_col!r} not in sumstats; specify sumstats_bp_col'
+        raise ValueError(error_message)
+    # Make gene BED file
+    gene_bed_file = f'{cache_prefix}.genes.bed'
+    genes\
+        .select(pl.col(gene_chrom_col).pipe(standardize_chromosomes),
+                gene_start_col, gene_end_col, gene_col)\
+        .write_csv(gene_bed_file, separator='\t', include_header=False)
+    # Make sumstats BED file
+    sumstats_bed_file = f'{cache_prefix}.sumstats.bed'
+    sumstats\
+        .with_columns(pl.col(sumstats_chrom_col).pipe(standardize_chromosomes),
+                      original_chrom=pl.col(sumstats_chrom_col))\
+        .select(sumstats_chrom_col,
+                pl.col(sumstats_bp_col).sub(1).alias('start'),
+                pl.col(sumstats_bp_col).alias('end'), pl.col(SNP_col),
+                'original_chrom')\
+        .write_csv(sumstats_bed_file, separator='\t', include_header=False)
+    # Run `bedtools closest -d`
+    distance_bed_file = f'{cache_prefix}.distance.bed'
+    run(f'bedtools closest -d -a {gene_bed_file} -b {sumstats_bed_file} > '
+        f'{distance_bed_file}')
+    nearest_variants = pl.scan_csv(
+        distance_bed_file, separator='\t', has_header=False,
+        new_columns=['__get_nearest_variant_gene_chrom', gene_start_col,
+                     gene_end_col, '__get_nearest_variant_gene_strand',
+                     gene_col, '__get_nearest_variant_gene_Ensembl_ID',
+                     '__get_nearest_variant_variant_chrom',
+                     '__get_nearest_variant_variant_start',
+                     '__get_nearest_variant_variant_end', SNP_col,
+                     gene_chrom_col, distance_col],
+        schema_overrides={gene_chrom_col: genes[gene_chrom_col].dtype})\
+        .filter(~pl.col.distance.eq(-1))\
+        .select([gene_col, gene_chrom_col, gene_start_col, gene_end_col,
+                 SNP_col, distance_col])\
+        .collect()
+    # Align with `genes`
+    nearest_variants = genes\
+        .select(gene_col, gene_chrom_col, gene_start_col, gene_end_col)\
+        .join(nearest_variants,
+              on=(gene_col, gene_chrom_col, gene_start_col, gene_end_col),
+              how='left')
+    # Clean up - but only at the end, so users can inspect what went wrong in
+    # case of an error
+    run(f"rm '{gene_bed_file}' '{sumstats_bed_file}' '{distance_bed_file}''")
+    return nearest_variants
+
+
 def get_bim_or_pvar_file_type(bim_or_pvar_file):
     """
     Gets  whether a file is .bim or .pvar
@@ -4309,7 +4951,7 @@ def get_bim_or_pvar_file_type(bim_or_pvar_file):
     return is_pvar
 
 
-def read_bim_or_pvar(bim_or_pvar_file):
+def read_bim_or_pvar(bim_or_pvar_file, categorical=False):
     """
     Reads a plink variant file (.bim or .pvar) as a polars DataFrame.
     
@@ -4317,6 +4959,8 @@ def read_bim_or_pvar(bim_or_pvar_file):
         bim_or_pvar_file: the .bim or .pvar file to read from; must end with
                           .bim or .pvar, and the extension determines which
                           file type it's parsed as
+        categorical: whether to read in the REF and ALT columns as Categorical
+                     instead of String
 
     Returns:
         A polars DataFrame with the contents of the .bim or .pvar file,
@@ -4343,10 +4987,29 @@ def read_bim_or_pvar(bim_or_pvar_file):
     else:
         skip_rows = 0
         has_header = False
+    dtypes = {'#CHROM' if has_header else 'column_1': pl.String}
+    if categorical:
+        if has_header:
+            ref_col = 'REF'
+            alt_col = 'ALT'
+        else:
+            first_line = pl.read_csv(bim_or_pvar_file, separator='\t',
+                                     has_header=has_header, n_rows=0)
+            if first_line.width not in (5, 6):
+                raise ValueError(f'bim_or_pvar_file "{bim_or_pvar_file}" has '
+                                 f'{first_line.width} columns, but should '
+                                 f'have 5 or 6!')
+            if first_line.width == 6:
+                ref_col = 'column_6'
+                alt_col = 'column_5'
+            else:
+                ref_col = 'column_5'
+                alt_col = 'column_4'
+        dtypes |= {ref_col: pl.Categorical('lexical'),
+                   alt_col: pl.Categorical('lexical')}
     variants = pl.read_csv(bim_or_pvar_file, separator='\t',
                            has_header=has_header, skip_rows=skip_rows,
-                           dtypes={'#CHROM' if has_header else
-                                   'column_1': pl.String})
+                           schema_overrides=dtypes)
     if has_header:
         variants = variants.rename({'#CHROM': 'CHROM', 'POS': 'BP',
                                     'ID': 'SNP'})
@@ -4422,7 +5085,8 @@ def make_bim_or_pvar_IDs_unique(bim_or_pvar_file, new_bim_or_pvar_file,
         new_bim_or_pvar_file: the bim or pvar file to write to after
                               uniquifying the variant IDs
         separator: the separator to join the SNP, CHROM, REF, and ALT columns
-                   with when uniquifying
+                   with when uniquifying; no variant IDs may contain the
+                   separator
     """
     bim_or_pvar = read_bim_or_pvar(bim_or_pvar_file)
     if bim_or_pvar['SNP'].str.contains(separator).any():
@@ -4433,7 +5097,7 @@ def make_bim_or_pvar_IDs_unique(bim_or_pvar_file, new_bim_or_pvar_file,
                          f'the separator argument!')
     bim_or_pvar\
         .with_columns(pl.concat_str('SNP', 'CHROM', 'REF', 'ALT',
-                            separator=separator))\
+                                    separator=separator))\
         .pipe(write_bim_or_pvar, new_bim_or_pvar_file)
 
 
@@ -4455,15 +5119,13 @@ def reverse_make_bim_or_pvar_IDs_unique(bim_or_pvar_file, new_bim_or_pvar_file,
     bim_or_pvar = read_bim_or_pvar(bim_or_pvar_file)
     if not bim_or_pvar['SNP'].str.contains(separator).all():
         suffix = bim_or_pvar_file.split('.')[-1]
-        raise ValueError(f'Not all variant IDs in the {suffix} file '
+        raise ValueError(f'not all variant IDs in the {suffix} file '
                          f'{bim_or_pvar_file} contain the separator '
                          f'{separator!r}; specify a different separator via '
                          f'the separator argument!')
     bim_or_pvar\
-        .with_columns(pl.col.SNP.str.split_exact(separator, 1))\
-        .unnest('SNP')\
-        .drop('field_1')\
-        .rename({'field_0': 'SNP'})\
+        .with_columns(SNP=pl.col.SNP.str.split_exact(separator, 1)
+                      .struct.field('field_0'))\
         .pipe(write_bim_or_pvar, new_bim_or_pvar_file)
 
 
@@ -4496,7 +5158,7 @@ def merge_bfiles(bfiles, merged_bfile):
                          f'a single string!')
     if len(bfiles) < 2:
         raise ValueError(f'bfiles must contain two or more filesets, not '
-                         f'{len(bfiles)}!')
+                         f'{len(bfiles):,}!')
     for suffix in 'bed', 'bim', 'fam':
         output_plink_file = f'{merged_bfile}.{suffix}'
         if os.path.exists(output_plink_file):
@@ -4521,7 +5183,7 @@ def merge_bfiles(bfiles, merged_bfile):
 
 
 def merge_pfiles(pfiles, merged_pfile, temp_dir=os.environ.get('SCRATCH', '.'),
-                 num_threads=16, memory=2000):
+                 num_threads=1, memory=2000):
     """
     Merge multiple pgen/pvar/psam filesets (pfiles) into one big fileset
     (merged_pfile) using plink 2.0's --pmerge-list.
@@ -4604,7 +5266,7 @@ def flip_alleles(sumstats, *, flip_col='FLIP', ref_col='REF', alt_col='ALT',
                          f'forget to specify a custom alt_col?')
     if beta_col not in sumstats and OR_col not in sumstats and \
             Z_col not in sumstats:
-        raise ValueError(f'None of beta_col "{beta_col}", OR_col "{OR_col}", '
+        raise ValueError(f'none of beta_col "{beta_col}", OR_col "{OR_col}", '
                          f'and Z_col "{Z_col}" are in sumstats! Did you '
                          f'forget to specify a custom beta_col, OR_col or '
                          f'Z_col?')
@@ -4693,8 +5355,8 @@ def harmonize_sumstats_to_bim_or_pvar(
 def ld_clump(sumstats, cache_prefix, *, pfile=None, bfile=None,
              clump_p1=5e-8, clump_p2=0.001, clump_r2=0.001, clump_kb=5000,
              SNP_col='SNP', chrom_col='CHROM', bp_col='BP', ref_col='REF',
-             alt_col='ALT', p_col='P', separator='~', num_threads=16,
-             memory=2000):
+             alt_col='ALT', p_col='P', separator='~', num_threads=1,
+             memory=2000, verbose=True):
     """
     Performs linkage disequilibrium (LD) clumping on summary statistics using
     plink's --clump (cog-genomics.org/plink/2.0/postproc#clump) and the LD info
@@ -4754,7 +5416,7 @@ def ld_clump(sumstats, cache_prefix, *, pfile=None, bfile=None,
                a string (assumed to be a single bfile for all chromosomes) or a
                list/tuple of bfiles (assumed to be one per chromosome).
         clump_p1: the value of --clump-p1 passed to --clump; for definitions of
-                  --clump args, see cog-genomics.org/plink/1.9/postproc#clump
+                  --clump args, see cog-genomics.org/plink/2.0/postproc#clump
         clump_p2: the value of --clump-p2 passed to --clump
         clump_r2: the value of --clump-r2 passed to --clump
         clump_kb: the value of --clump-kb passed to --clump
@@ -4767,11 +5429,13 @@ def ld_clump(sumstats, cache_prefix, *, pfile=None, bfile=None,
         p_col: the name of the p-value column in sumstats
         separator: the string to place between the variant ID, chromosome,
                    reference allele, and alternate allele when creating the
-                   temporary sumstats and pvar files
+                   temporary sumstats and pvar files; no variant IDs may
+                   contain the separator
         num_threads: the number of threads to use for LD clumping; if None, use
                      all available cores
         memory: the number of megabytes of memory for plink to reserve during
                 LD-clumping via the --memory flag
+        verbose: whether to print details of the LD clumping process
 
     Returns:
         A polars DataFrame with one row per variant in an LD clump, with the
@@ -4842,12 +5506,20 @@ def ld_clump(sumstats, cache_prefix, *, pfile=None, bfile=None,
                              f'{separator!r}; specify a different separator '
                              f'via the separator argument!')
     # Harmonize sumstats to bim/pvar
+    old_length = len(sumstats)
     sumstats = sumstats\
         .with_columns(original_ref=ref_col, original_alt=alt_col)\
         .pipe(harmonize_sumstats_to_bim_or_pvar,
               pl.concat(bim_or_pvars.values()),
               SNP_col=SNP_col, ref_col=ref_col, alt_col=alt_col,
               chrom_col=chrom_col, convert_chromosomes=True)
+    num_filtered = old_length - len(sumstats)
+    if verbose:
+        print(f'Removing {num_filtered:,} {plural("variant", num_filtered)} '
+              f'in the sumstats '
+              f'({100 * num_filtered / old_length:.2f}%) '
+              f'that {"was" if num_filtered == 1 else "were"} not found in '
+              f'the {suffix} file')
     # Create temporary sumstats file; map chromosomes to numbers to match plink
     # Escape commas in the SNP column (i.e. when SNPs have multiple rs numbers)
     # with two separators (~~ by default) because --clump delimits its own
@@ -4897,7 +5569,7 @@ def ld_clump(sumstats, cache_prefix, *, pfile=None, bfile=None,
         run(f"(cat '{cache_prefix}_1.clumps'; tail -qn+2 " + ' '.join(
             f"'{cache_prefix}_{file_index}.clumps'"
             for file_index in range(2, len(filesets) + 1)) +
-            f" > '{clumping_results_file}'")
+            f") > '{clumping_results_file}'")
     # Load clumping results; map each clumped variant to its lead variant
     # (also remember to add a mapping from each lead variant to itself, and
     # unescape the double-separator back to comma at the right moment)
@@ -4916,11 +5588,10 @@ def ld_clump(sumstats, cache_prefix, *, pfile=None, bfile=None,
         .select(pl.all().str.replace(separator + separator, ','))\
         .pipe(lambda df: pl.concat([
             df.filter(pl.col.SP2 != 'NONE')
-            .with_columns(pl.col.SP2.str.split_exact('(', 1)
-                          .struct.field('field_0').alias('SP2')),
+            .with_columns(SP2=pl.col.SP2.str.split_exact('(', 1)
+                          .struct.field('field_0')),
             # add a mapping from each lead variant to itself
-            pl.DataFrame({'ID': (unique := df['ID'].unique()),
-                          'SP2': unique})]))\
+            pl.DataFrame({'ID': df['ID'].unique()}).with_columns(SP2='ID')]))\
         .rename({'ID': 'lead_variant', 'SP2': SNP_col})\
         .select(SNP_col, 'lead_variant')\
         .with_columns(pl.col(SNP_col).str.split_exact('~', 3).struct
@@ -5003,18 +5674,18 @@ def munge_sumstats(raw_sumstats_files, munged_sumstats_file, REF, ALT, P, *,
                    SNP=None, CHROM=None, BP=None, BETA=None, OR=None, SE=None,
                    N=None, N_CASES=None, N_CONTROLS=None, NEFF=None, AAF=None,
                    AAF_CASES=None, AAF_CONTROLS=None, INFO=None,
-                   quantitative=False, dbSNP=None, filter=None, separator='\t',
-                   verbose=True, **read_csv_kwargs):
+                   quantitative=False, dbSNP=None, preamble=None,
+                   separator='\t', verbose=True, **read_csv_kwargs):
     """
     "Munges" the sumstats file(s) raw_sumstats_files into a consistent format,
-    saving to munged_sumstats_file.
+    saving to munged_sumstats_file (if not None) and returning the sumstats.
     
     If dbSNP is not None, infers rs numbers. You should always do this if CHROM
     and BP are available, even if the sumstats already came with rs numbers!
     
-    Make sure to set dtypes={'CHROM': str} explicitly when the sumstats include
-    sex chromosomes and there is no chr prefix (e.g. when it's '1' and 'X'
-    rather than 'chr1' and 'chrX').
+    Make sure to set schema_overrides={'CHROM': str} explicitly when the
+    sumstats include sex chromosomes and there is no chr prefix (e.g. when it's
+    '1' and 'X' rather than 'chr1' and 'chrX').
     
     Performs the following steps, in order, on each file in raw_sumstats_files:
     1. Reads in the file with pl.read_csv(). Use separator to specify the
@@ -5062,8 +5733,10 @@ def munge_sumstats(raw_sumstats_files, munged_sumstats_file, REF, ALT, P, *,
     8. Removes variants without rs numbers in dbSNP and variants that aren't
        unique (based on SNP + REF + ALT, + CHROM/BP if they're not None).
     9. Sorts by CHROM and then BP, if those are not None.
-    10. Saves to munged_sumstats_file. If munged_sumstats_file ends in .gz,
-        sumstats will be block-gzipped with bgzip for convenience.
+    10. Saves to munged_sumstats_file, unless munged_sumstats_file is None. If
+        munged_sumstats_file ends in .gz, sumstats will be block-gzipped with
+        bgzip for convenience.
+    11. Returns the sumstats.
 
     For example, let's munge the depression sumstats on Niagara at
     /scratch/w/wainberg/wainberg/sumstats/daner_MDDwoBP_20201001_2015iR15iex_
@@ -5093,7 +5766,8 @@ def munge_sumstats(raw_sumstats_files, munged_sumstats_file, REF, ALT, P, *,
     Args:
         raw_sumstats_files: the filename of the input sumstats, or a
                             list/tuple/etc. of filenames to be concatenated
-        munged_sumstats_file: the output sumstats filename
+        munged_sumstats_file: if not None, the output sumstats filename to save
+                              to
         REF: the reference allele column/expression; mandatory
         ALT: the alternate allele column/expression; mandatory
         P: the p-value column/expression; mandatory
@@ -5143,19 +5817,22 @@ def munge_sumstats(raw_sumstats_files, munged_sumstats_file, REF, ALT, P, *,
         dbSNP: a DataFrame returned by load_dbSNP(); must match the genome
                build of raw_sumstats_files' BP column! If not specified, do not
                infer rs numbers.
-        filter: a polars expression to filter each file in raw_sumstats_files
-                on, immediately after loading (so use the original column names
-                in the expression, not the new column names!)
+        preamble: an optional function to apply immediately after loading each
+                  file in raw_sumstats_files (so use the original column names
+                  in the expression, not the new column names). For instance,
+                  to filter to variants with minor allele frequencies between
+                  0.01 and 0.99, use preamble=lambda df: df.filter(
+                  pl.col.all_maf.between(0.01, 0.99)).
         separator: the separator to use when parsing each raw sumstats file
                    with pl.read_csv(), or 'whitespace' to use any number of
                    consecutive whitespace characters as the separator, like
                    delim_whitespace=True in pandas.read_table().
         verbose: whether to print details of the munging process
-        **read_csv_kwargs: keyword arguments to pl.read_csv()
+        **read_csv_kwargs: keyword arguments to pl.read_csv(). By default,
+                           null_values='NA' is set.
     
     Returns:
-        A DataFrame of the munged sumstats (which, more importantly, is saved
-        to disk as munged_sumstats_file).
+        A DataFrame of the munged sumstats.
     """
     # Check inputs
     if REF is None:
@@ -5294,13 +5971,17 @@ def munge_sumstats(raw_sumstats_files, munged_sumstats_file, REF, ALT, P, *,
                 BETA if quantitative else OR, 'SE': SE, 'P': P, 'N': N,
             'N_CASES': N_CASES, 'N_CONTROLS': N_CONTROLS, 'NEFF': NEFF}.items()
         if formula is not None}
-    # Load files in raw_sumstats_files; filter and select columns
+    # Load files in raw_sumstats_files; apply the preamble function (if not
+    # None) and select columns
     raw_sumstats_files = (raw_sumstats_files,) \
         if isinstance(raw_sumstats_files, str) else tuple(raw_sumstats_files)
     columns = tuple(set.union(*(set(formula.meta.root_names())
                                 if isinstance(formula, pl.Expr) else formula
                                 for formula in column_formulas.values()
                                 if not isinstance(formula, (int, float)))))
+    default_read_csv_kwargs = dict(null_values='NA')
+    read_csv_kwargs = default_read_csv_kwargs | read_csv_kwargs \
+        if read_csv_kwargs is not None else default_read_csv_kwargs
     sumstats = pl.concat((
         read_csv_delim_whitespace(raw_sumstats_file, columns=columns,
                                   **read_csv_kwargs)
@@ -5313,7 +5994,7 @@ def munge_sumstats(raw_sumstats_files, munged_sumstats_file, REF, ALT, P, *,
         pl.scan_csv(raw_sumstats_file, separator=separator, **read_csv_kwargs)
         .select(columns))
         .lazy()
-        .pipe(lambda df: df if filter is None else df.filter(filter))
+        .pipe(preamble if preamble is not None else lambda df: df)
         .select(**column_formulas)
         for raw_sumstats_file in raw_sumstats_files)\
         .collect()
@@ -5453,13 +6134,18 @@ def munge_sumstats(raw_sumstats_files, munged_sumstats_file, REF, ALT, P, *,
     # Sort
     if BP is not None:
         sumstats = sumstats.pipe(sort_sumstats)
-    # Save; block-gzip if munged_sumstats_file ends in .gz
-    sumstats\
-        .with_columns(pl.selectors.float().map_elements('{:.12g}'.format))\
-        .write_csv(munged_sumstats_file.removesuffix('.gz'),
-                   separator='\t')
-    if munged_sumstats_file.endswith('.gz'):
-        run(f'bgzip -f {munged_sumstats_file.removesuffix(".gz")}')
+    # Save, if munged_sumstats_file is not None; block-gzip if
+    # munged_sumstats_file ends in .gz
+    if munged_sumstats_file is not None:
+        sumstats\
+            .with_columns(pl.selectors.float()
+                          .map_elements('{:.12g}'.format,
+                                        return_dtype=pl.String))\
+            .write_csv(munged_sumstats_file.removesuffix('.gz'),
+                       separator='\t')
+        if munged_sumstats_file.endswith('.gz'):
+            run(f'bgzip -f {munged_sumstats_file.removesuffix(".gz")}')
+    # Return the sumstats, even if saving
     return sumstats
     
 
@@ -5477,7 +6163,8 @@ def munge_regenie_sumstats(raw_sumstats_files, munged_sumstats_file, *,
                build of raw_sumstats_files' BP column! If not specified, do not
                infer rs numbers.
     """
-    munge_sumstats(raw_sumstats_files, munged_sumstats_file, CHROM='CHROM',
+    munge_sumstats(raw_sumstats_files, munged_sumstats_file,
+                   CHROM=pl.col.CHROM.cast(pl.String).replace({'23': 'X'}),
                    BP='GENPOS', SNP='ID', REF='ALLELE0', ALT='ALLELE1',
                    AAF='A1FREQ',
                    AAF_CASES=None if quantitative else 'A1FREQ_CASES',
@@ -5485,8 +6172,8 @@ def munge_regenie_sumstats(raw_sumstats_files, munged_sumstats_file, *,
                    INFO='INFO', N='N',
                    N_CASES=None if quantitative else 'N_CASES',
                    N_CONTROLS=None if quantitative else 'N_CONTROLS',
-                   BETA='BETA', SE='SE', P='P', quantitative=quantitative,
-                   preamble='P = 10^-LOG10P; if (CHROM == 23) {CHROM = "X"}',
+                   BETA='BETA', SE='SE', P=10 ** -pl.col.LOG10P,
+                   quantitative=quantitative,
                    separator=' ', dbSNP=dbSNP)
 
 
@@ -5641,75 +6328,102 @@ def get_minimal_representations_awk(include_bp=True):
 def load_dbSNP(genome_build, *,
                dbSNP_dir=f'{get_base_data_directory()}/dbSNP'):
     """
-    Loads all autosomal + chrX/Y/M variants in dbSNP, caching intermediate and
+    Load all autosomal + chrX/Y/M variants in dbSNP, caching intermediate and
     final results in the cache directory dbSNP_dir. Multiallelic variants are
     split, then variants are converted to their minimal representations.
+    Variants that map to multiple genomic locations
+    (ncbi.nlm.nih.gov/snp/docs/rs_multi_mapping) are removed.
     
-    Must be run on a node with a large amount of memory! 120 GB should be
-    sufficient.
+    Must be run on a node with a large amount of memory! 120 GiB should be
+    sufficient. (You will need more - closer to 188 GiB, the size of a
+    Niagara compute node - if the dbSNP cache has not been generated. Also,
+    you will need to first run it on a login node, to download the files, then
+    when it runs out of memory, switch to a compute node. It is hacky.)
     
     Args:
         genome_build: the genome build (hg38 or hg19)
-        dbSNP_dir: the cache directory to store intermediate and final results
+        dbSNP_dir: the cache directory to store intermediate and final results.
+                   Because generating the cache can take a long time, you will
+                   probably want to leave this argument at its default value.
 
     Returns:
         A polars DataFrame with columns CHROM, BP, REF, ALT and RSID.
     """
     check_valid_genome_build(genome_build)
-    dbSNP_cache = os.path.join(dbSNP_dir, f'{genome_build}.tsv')
-    if not os.path.exists(dbSNP_cache):
-        dbSNP_file = f'{dbSNP_dir}/GCF_000001405.' \
-             f'{40 if genome_build == "hg38" else 25}.gz'
-        if not os.path.exists(dbSNP_file):
+    dbSNP_file = os.path.join(dbSNP_dir, f'{genome_build}.tsv')
+    read_csv_kwargs = dict(separator='\t', schema_overrides={
+        'CHROM': pl.Categorical, 'BP': pl.Int32,
+        'REF': pl.Categorical('lexical'), 'ALT': pl.Categorical('lexical')})
+    if os.path.exists(dbSNP_file):
+        return pl.read_csv(dbSNP_file, **read_csv_kwargs)
+    else:
+        full_dbSNP_file = os.path.join(
+            dbSNP_dir, f'GCF_000001405.'
+                       f'{40 if genome_build == "hg38" else 25}.gz')
+        if not os.path.exists(full_dbSNP_file):
             raise_error_if_on_compute_node()
             run(f'mkdir -p {dbSNP_dir} && '
                 f'wget https://ftp.ncbi.nih.gov/snp/latest_release/VCF/'
-                f'{os.path.basename(dbSNP_file)} -O {dbSNP_file}')
-        dbSNP_chromosome_IDs = {
-            'NC_000001.11': 'chr1', 'NC_000002.12': 'chr2',
-            'NC_000003.12': 'chr3', 'NC_000004.12': 'chr4',
-            'NC_000005.10': 'chr5', 'NC_000006.12': 'chr6',
-            'NC_000007.14': 'chr7', 'NC_000008.11': 'chr8',
-            'NC_000009.12': 'chr9', 'NC_000010.11': 'chr10',
-            'NC_000011.10': 'chr11', 'NC_000012.12': 'chr12',
-            'NC_000013.11': 'chr13', 'NC_000014.9': 'chr14',
-            'NC_000015.10': 'chr15', 'NC_000016.10': 'chr16',
-            'NC_000017.11': 'chr17', 'NC_000018.10': 'chr18',
-            'NC_000019.10': 'chr19', 'NC_000020.11': 'chr20',
-            'NC_000021.9': 'chr21', 'NC_000022.11': 'chr22',
-            'NC_000023.11': 'chrX', 'NC_000024.10': 'chrY',
-            'NC_012920.1': 'chrM'
-        } if genome_build == 'hg38' else {
-            'NC_000001.10': 'chr1', 'NC_000002.11': 'chr2',
-            'NC_000003.11': 'chr3', 'NC_000004.11': 'chr4',
-            'NC_000005.9': 'chr5', 'NC_000006.11': 'chr6',
-            'NC_000007.13': 'chr7', 'NC_000008.10': 'chr8',
-            'NC_000009.11': 'chr9', 'NC_000010.10': 'chr10',
-            'NC_000011.9': 'chr11', 'NC_000012.11': 'chr12',
-            'NC_000013.10': 'chr13', 'NC_000014.8': 'chr14',
-            'NC_000015.9': 'chr15', 'NC_000016.9': 'chr16',
-            'NC_000017.10': 'chr17', 'NC_000018.9': 'chr18',
-            'NC_000019.9': 'chr19', 'NC_000020.10': 'chr20',
-            'NC_000021.8': 'chr21', 'NC_000022.10': 'chr22',
-            'NC_000023.10': 'chrX', 'NC_000024.9': 'chrY',
-            'NC_012920.1': 'chrM'}
-        dbSNP_awk_array = ''.join(
-            f'dbSNP_map["{ID}"] = "{chrom}"; '
-            for ID, chrom in dbSNP_chromosome_IDs.items())
-        # Memory optimization: seen is deleted after every chromosome
-        # (assumes chromosomes are contiguous in dbSNP, which they are)
-        run(f'awk \'BEGIN {{while ((getline line) && (line ~ /^##/)); '
-            f'print "CHROM", "BP", "REF", "ALT", "RSID"; {dbSNP_awk_array}}} '
-            f'$1 in dbSNP_map {{split($5, alts, ","); chrom = dbSNP_map[$1]; '
-            f'if (chrom != prev_chrom) delete seen; prev_chrom = chrom; '
-            f'for (i in alts) {{ bp = $2; ref = $4; alt = alts[i]; '
-            f'{get_minimal_representations_awk()}; '
-            f'if (!seen[bp":"ref":"alt":"$3]++) print chrom, bp, ref, alt, $3'
-            f'}}}}\' OFS="\t" <(zcat {dbSNP_file}) > {dbSNP_cache}')
-    dbSNP = pl.read_csv(dbSNP_cache, separator='\t',
-                        dtypes={'CHROM': pl.Categorical, 'BP': pl.Int32,
-                                'REF': pl.Categorical, 'ALT': pl.Categorical})
-    return dbSNP
+                f'{os.path.basename(full_dbSNP_file)} -O {full_dbSNP_file}')
+        dbSNP_file_with_multimapping = os.path.join(
+            dbSNP_dir, f'{genome_build}_with_multimapping.tsv')
+        if not os.path.exists(dbSNP_file_with_multimapping):
+            dbSNP_chromosome_IDs = {
+                'NC_000001.11': 'chr1', 'NC_000002.12': 'chr2',
+                'NC_000003.12': 'chr3', 'NC_000004.12': 'chr4',
+                'NC_000005.10': 'chr5', 'NC_000006.12': 'chr6',
+                'NC_000007.14': 'chr7', 'NC_000008.11': 'chr8',
+                'NC_000009.12': 'chr9', 'NC_000010.11': 'chr10',
+                'NC_000011.10': 'chr11', 'NC_000012.12': 'chr12',
+                'NC_000013.11': 'chr13', 'NC_000014.9': 'chr14',
+                'NC_000015.10': 'chr15', 'NC_000016.10': 'chr16',
+                'NC_000017.11': 'chr17', 'NC_000018.10': 'chr18',
+                'NC_000019.10': 'chr19', 'NC_000020.11': 'chr20',
+                'NC_000021.9': 'chr21', 'NC_000022.11': 'chr22',
+                'NC_000023.11': 'chrX', 'NC_000024.10': 'chrY',
+                'NC_012920.1': 'chrM'
+            } if genome_build == 'hg38' else {
+                'NC_000001.10': 'chr1', 'NC_000002.11': 'chr2',
+                'NC_000003.11': 'chr3', 'NC_000004.11': 'chr4',
+                'NC_000005.9': 'chr5', 'NC_000006.11': 'chr6',
+                'NC_000007.13': 'chr7', 'NC_000008.10': 'chr8',
+                'NC_000009.11': 'chr9', 'NC_000010.10': 'chr10',
+                'NC_000011.9': 'chr11', 'NC_000012.11': 'chr12',
+                'NC_000013.10': 'chr13', 'NC_000014.8': 'chr14',
+                'NC_000015.9': 'chr15', 'NC_000016.9': 'chr16',
+                'NC_000017.10': 'chr17', 'NC_000018.9': 'chr18',
+                'NC_000019.9': 'chr19', 'NC_000020.10': 'chr20',
+                'NC_000021.8': 'chr21', 'NC_000022.10': 'chr22',
+                'NC_000023.10': 'chrX', 'NC_000024.9': 'chrY',
+                'NC_012920.1': 'chrM'}
+            dbSNP_awk_array = ''.join(
+                f'dbSNP_map["{ID}"] = "{chrom}"; '
+                for ID, chrom in dbSNP_chromosome_IDs.items())
+            # Memory optimization: seen is deleted after every chromosome
+            # (assumes chromosomes are contiguous in dbSNP, which they are)
+            run(f'awk \'BEGIN {{while ((getline line) && (line ~ /^##/)); '
+                f'print "CHROM", "BP", "REF", "ALT", "RSID"; {dbSNP_awk_array}'
+                f'}} $1 in dbSNP_map {{split($5, alts, ","); chrom = '
+                f'dbSNP_map[$1]; if (chrom != prev_chrom) delete seen; '
+                f'prev_chrom = chrom; for (i in alts) {{ bp = $2; ref = $4; '
+                f'alt = alts[i]; {get_minimal_representations_awk()}; '
+                f'if (!seen[bp":"ref":"alt":"$3]++) print chrom, bp, ref, '
+                f'alt, $3}}}}\' OFS="\t" <(zcat {full_dbSNP_file}) > '
+                f'{dbSNP_file_with_multimapping}')
+        # Remove multi-mapping variants; this is equivalent (aside from
+        # sorting) to dbSNP = dbSNP.unique(['RSID', 'REF', 'ALT'], keep='none')
+        dbSNP = pl.read_csv(dbSNP_file_with_multimapping, **read_csv_kwargs)
+        dbSNP = dbSNP\
+            .cast({'CHROM': pl.Enum([f'chr{i}' for i in range(1, 23)] +
+                                    ['chrX', 'chrY', 'chrM'])})\
+            .sort('RSID', 'REF', 'ALT')\
+            .with_columns(rle_id=pl.struct('RSID', 'REF', 'ALT').rle_id())\
+            .filter(pl.col.rle_id.ne(pl.col.rle_id.shift(fill_value=-1)) &
+                    pl.col.rle_id.ne(pl.col.rle_id.shift(-1, fill_value=-1)))\
+            .drop('rle_id')\
+            .sort('CHROM', 'BP', 'REF', 'ALT', 'RSID')
+        dbSNP.write_csv(dbSNP_file, separator='\t')
+        return dbSNP
 
 
 def check_valid_dbSNP(dbSNP):
@@ -5744,9 +6458,9 @@ def get_rs_numbers(df, dbSNP, *, chrom_col='CHROM', bp_col='BP', ref_col='REF',
     
     If rs_col is already a column of df, variants present in dbSNP will have
     their IDs in rs_col overwritten with their rs numbers. rs numbers for
-    variants not present in dbSNP will be set to null, unless
-    fall_back_to_old_IDs=True, in which case their original IDs will be
-    retained.
+    variants not present in dbSNP (including multi-mapping variants; see
+    load_dbSNP()) will be set to null, unless fall_back_to_old_IDs=True, in
+    which case their original IDs will be retained.
     
     If rs_col is not already a column of df, variants missing from dbSNP will
     always have their rs numbers set to null, as there are no old IDs to fall
@@ -5757,7 +6471,7 @@ def get_rs_numbers(df, dbSNP, *, chrom_col='CHROM', bp_col='BP', ref_col='REF',
     used in load_dbSNP().
 
     Args:
-        df: a DataFrame with columns chrom_col/bp_col/ref_col/alt_col
+        df: a DataFrame with chrom_col, bp_col, ref_col, and alt_col columns
         dbSNP: a DataFrame returned by load_dbSNP(); must match the genome
                build of df's bp_col!
         chrom_col: the name of the chromosome column in df
@@ -5819,7 +6533,8 @@ def get_rs_numbers(df, dbSNP, *, chrom_col='CHROM', bp_col='BP', ref_col='REF',
                           pl.col(ref_col, alt_col).cast(pl.Categorical))
         # Allow matches without ref/alt flips...
         matches_without_flips = df_chrom\
-            .join(dbSNP_chrom, on=[bp_col, ref_col, alt_col], how='left')\
+            .join(dbSNP_chrom, on=[bp_col, ref_col, alt_col], how='left',
+                  coalesce=True)\
             .drop_nulls(rs_col)
         # ...or with ref/alt flips, but only for SNVs (since for indels, e.g.
         # "21:15847757:A:AG" and "21:15847757:AG:A" are different variants: the
@@ -5843,7 +6558,7 @@ def get_rs_numbers(df, dbSNP, *, chrom_col='CHROM', bp_col='BP', ref_col='REF',
             matches_with_flips.with_columns(pl.lit(True).alias(flip_col))])\
             .group_by('index')\
             .agg(pl.col(rs_col).sort_by(pl.col(rs_col).str.slice(2).cast(int))
-                 .str.concat(','), pl.first(flip_col))
+                 .str.join(','), pl.first(flip_col))
         rs_numbers = chrom_rs_numbers if rs_numbers is None else \
             rs_numbers.extend(chrom_rs_numbers)
         del dbSNP_chrom, df_chrom, matches_without_flips, matches_with_flips, \
@@ -5852,58 +6567,27 @@ def get_rs_numbers(df, dbSNP, *, chrom_col='CHROM', bp_col='BP', ref_col='REF',
         df = df\
             .lazy()\
             .drop(rs_col)\
-            .join(rs_numbers, on='index', how='left')\
-            .pipe(lambda df_: df_.with_columns(pl.col(rs_col)
-                                               .fill_null(df[rs_col]))
-                  if fall_back_to_old_IDs else df_)\
+            .join(rs_numbers.lazy(), on='index', how='left')\
             .drop('index')\
             .collect()
     else:
-        df = df.join(rs_numbers, on='index', how='left').drop('index')
+        df = df\
+            .join(rs_numbers, on='index', how='left')\
+            .drop('index')
+    # Print how many variants had matching rs numbers
+    if verbose:
+        num_mapped = len(df) - df[rs_col].null_count()
+        print(f'{num_mapped:,} of {len(df):,} variants '
+              f'({100 * num_mapped / len(df):.2f}%) had matching rs numbers')
+    # Fall back to old IDs, if specified
+    if rs_col in df and fall_back_to_old_IDs:
+        df = df.with_columns(pl.col(rs_col).fill_null(df[rs_col]))
     return df
 
 
-def get_rs_numbers_bim_or_pvar(bim_or_pvar_file, dbSNP, *, verbose=True):
-    """
-    Given a plink bim/pvar file, replace the IDs in the second column with
-    rs numbers, saving the original file to {bim_or_pvar_file}.no_rs_numbers.
-    Variants not in dbSNP will retain their original variant IDs.
-    
-    The file must end with .bim or .pvar; file format will be inferred based on
-    the extension. If .pvar, strips the header lines starting with ##.
-    
-    Args:
-        bim_or_pvar_file: the bim or pvar file to read from and write to; must
-                          end with .bim or .pvar, and the extension determines
-                          which file type it's parsed and written as
-        dbSNP: a DataFrame returned by load_dbSNP(); must match the genome
-               build of bim_or_pvar_file!
-        verbose: whether to print what's happening at each step
-    """
-    check_valid_dbSNP(dbSNP)
-    is_pvar = get_bim_or_pvar_file_type(bim_or_pvar_file)
-    file_type = 'pvar' if is_pvar else 'bim'
-    old_bim_or_pvar_file = f'{bim_or_pvar_file}.no_rs_numbers'
-    if os.path.exists(old_bim_or_pvar_file):
-        raise ValueError(f'Old {file_type} file "{old_bim_or_pvar_file}" '
-                         f'already exists! Delete it before running '
-                         f'get_rs_numbers_bim_or_pvar()')
-    if verbose:
-        print(f'Loading {file_type} file "{bim_or_pvar_file}"...')
-    variants = read_bim_or_pvar(bim_or_pvar_file)
-    variants = get_rs_numbers(variants, dbSNP=dbSNP, verbose=verbose,
-                              fall_back_to_old_IDs=True)
-    if verbose:
-        print(f'Moving "{bim_or_pvar_file}" to "{old_bim_or_pvar_file}"...')
-    run(f'mv "{bim_or_pvar_file}" "{old_bim_or_pvar_file}"')
-    if verbose:
-        print(f'Saving to "{bim_or_pvar_file}"...')
-    write_bim_or_pvar(variants, bim_or_pvar_file)
-
-
-def get_variant_positions(df, dbSNP, *, rs_col='SNP', ref_col='REF',
-                          alt_col='ALT', chrom_col='CHROM', bp_col='BP',
-                          flip_col='FLIP', fall_back_to_old_positions=False):
+def get_positions(df, dbSNP, *, rs_col='SNP', ref_col='REF', alt_col='ALT',
+                  chrom_col='CHROM', bp_col='BP', flip_col='FLIP',
+                  fall_back_to_old_positions=False):
     """
     The reverse of get_rs_numbers(): given a DataFrame of variants with rs_col,
     ref_col, and alt_col columns, adds columns chrom_col and bp_col to the
@@ -5912,12 +6596,14 @@ def get_variant_positions(df, dbSNP, *, rs_col='SNP', ref_col='REF',
     and alt alleles flipped to match dbSNP; flipping is only attempted for
     single-nucleotide variants.
     
+    Use this function to remap sumstats to a different genome build!
+    
     If chrom_col and bp_col are already columns of df, variants present in
     dbSNP will have their chromosomes and base-pairs in chrom_col and bp_col
-    overwritten with those from dbSNP. Variants not present in dbSNP will have
-    their chromosomes and base-pair positions set to null, unless
-    fall_back_to_old_positions=True, in which case their original chromsomes
-    and base-pair positions wil be retained.
+    overwritten with those from dbSNP. Variants not present in dbSNP (including
+    multi-mapping variants; see load_dbSNP()) will have their chromosomes and
+    base-pair positions set to null, unless fall_back_to_old_positions=True, in
+    which case their original chromsomes/base-pair positions wil be retained.
     
     If chrom_col and bp_col are not already columns of df, variants missing
     from dbSNP will always have their chromosomes and base-pair positions set
@@ -5930,7 +6616,7 @@ def get_variant_positions(df, dbSNP, *, rs_col='SNP', ref_col='REF',
     behavior, here it is a limitation!
     
     Args:
-        df: a DataFrame with columns rs_col/ref_col/alt_col
+        df: a DataFrame with rs_col, ref_col, and alt_col columns
         dbSNP: a DataFrame returned by load_dbSNP() for the genome build you
                want to get chrom/bp positions for
         rs_col: the name of the rs number column in df
@@ -5972,15 +6658,18 @@ def get_variant_positions(df, dbSNP, *, rs_col='SNP', ref_col='REF',
         raise ValueError(f'"{flip_col}" already in df; rename it or specify '
                          f'a different column name for flip_col')
     check_valid_dbSNP(dbSNP)
-    # Save chromosomes and base-pair positions for later, if
-    # fall_back_to_old_positions=True
+    # If fall_back_to_old_positions=True, save chromosomes and base-pair
+    # positions for later; otherwise, drop them so that they don't mess up the
+    # join with dbSNP
     if fall_back_to_old_positions:
         if chrom_col not in df:
             raise ValueError(f'You specified fall_back_to_old_positions=True, '
                              f'but chrom_col "{chrom_col}" and bp_col '
                              f'"{bp_col}" are not in df; specify them')
-        df = df.rename({chrom_col: f'__{chrom_col}_GET_VARIANT_POSITIONS',
-                        bp_col: f'__{bp_col}_GET_VARIANT_POSITIONS'})
+        df = df.rename({chrom_col: f'_GET_VARIANT_POSITIONS_{chrom_col}',
+                        bp_col: f'_GET_VARIANT_POSITIONS_{bp_col}'})
+    else:
+        df = df.drop(chrom_col, bp_col)
     # Convert df's ref and alt to their minimal representations
     df = df\
         .pipe(get_minimal_representations, ref_col=ref_col, alt_col=alt_col,
@@ -5990,7 +6679,7 @@ def get_variant_positions(df, dbSNP, *, rs_col='SNP', ref_col='REF',
     # constructing the chromosome and base-pair columns piecewise by chromosome
     # because the variant's chromosome isn't known a priori, so it needs to be
     # matched against the entirety of dbSNP. However, as an optimization,
-    # subset dbSNP to just the rsIDs in df
+    # subset dbSNP to just the rsIDs in df.
     dbSNP = dbSNP\
         .rename({'CHROM': chrom_col, 'BP': bp_col, 'REF': ref_col,
                  'ALT': alt_col, 'RSID': rs_col})\
@@ -6033,9 +6722,182 @@ def get_variant_positions(df, dbSNP, *, rs_col='SNP', ref_col='REF',
     if fall_back_to_old_positions:
         df = df\
             .with_columns(pl.col(chrom_col).fill_null(
-                              pl.col(f'__{chrom_col}_GET_VARIANT_POSITIONS')),
+                              pl.col(f'_GET_VARIANT_POSITIONS_{chrom_col}')),
                           pl.col(bp_col).fill_null(
-                              pl.col(f'__{bp_col}_GET_VARIANT_POSITIONS')))\
-            .drop(f'__{chrom_col}_GET_VARIANT_POSITIONS',
-                  f'__{bp_col}_GET_VARIANT_POSITIONS')
+                              pl.col(f'_GET_VARIANT_POSITIONS_{bp_col}')))\
+            .drop(f'_GET_VARIANT_POSITIONS_{chrom_col}',
+                  f'_GET_VARIANT_POSITIONS_{bp_col}')
     return df
+
+
+def get_rs_numbers_bim_or_pvar(bim_or_pvar_file, dbSNP, *, verbose=True):
+    """
+    Given a plink bim/pvar file, replace the IDs in the second column with
+    rs numbers, saving the original file to {bim_or_pvar_file}.no_rs_numbers.
+    Variants not in dbSNP (or multi-mapping variants; see load_dbSNP()) will
+    retain their original variant IDs.
+    
+    The file must end with .bim or .pvar; file format will be inferred based on
+    the extension. If .pvar, strips the header lines starting with ##.
+    
+    Args:
+        bim_or_pvar_file: the bim or pvar file to read from and write to; must
+                          end with .bim or .pvar, and the extension determines
+                          which file type it's parsed and written as
+        dbSNP: a DataFrame returned by load_dbSNP(); must match the genome
+               build of bim_or_pvar_file!
+        verbose: whether to print what's happening at each step
+    """
+    check_valid_dbSNP(dbSNP)
+    is_pvar = get_bim_or_pvar_file_type(bim_or_pvar_file)
+    file_type = 'pvar' if is_pvar else 'bim'
+    old_bim_or_pvar_file = f'{bim_or_pvar_file}.no_rs_numbers'
+    if verbose and os.path.exists(old_bim_or_pvar_file):
+        print(f'old {file_type} file "{old_bim_or_pvar_file}" already exists; '
+              f'returning without updating rs numbers, since rs numbers seem '
+              f'to have already been added')
+        return
+    if verbose:
+        print(f'Loading {file_type} file "{bim_or_pvar_file}"...')
+    variants = read_bim_or_pvar(bim_or_pvar_file)
+    if verbose:
+        print(f'Getting rs numbers...')
+    variants = get_rs_numbers(variants, dbSNP=dbSNP, verbose=verbose,
+                              fall_back_to_old_IDs=True)
+    if verbose:
+        print(f'Moving "{bim_or_pvar_file}" to "{old_bim_or_pvar_file}"...')
+    run(f'mv "{bim_or_pvar_file}" "{old_bim_or_pvar_file}"')
+    if verbose:
+        print(f'Saving to "{bim_or_pvar_file}"...')
+    write_bim_or_pvar(variants, bim_or_pvar_file)
+
+
+def get_positions_bim_or_pvar(bim_or_pvar_file, new_bim_or_pvar_file, dbSNP, *,
+                              separator='~', verbose=True):
+    """
+    Given a plink bim/pvar file, replace its base-pair positions with those
+    from dbSNP, remove variants not found in dbSNP (or multi-mapping variants;
+    see load_dbSNP()), and save the result to a new bim/pvar file,
+    new_bim_or_pvar_file. Then, create bed/fam or pgen/psam files with the same
+    prefix as new_bim_or_pvar_file, with the same variants removed.
+    
+    Use this function to remap plink files to a different genome build!
+    
+    The file must end with .bim or .pvar; file format will be inferred based on
+    the extension. If .pvar, strips the header lines starting with ##.
+    
+    Args:
+        bim_or_pvar_file: the bim or pvar file to read from; must end with .bim
+                          or .pvar, and the extension determines which file
+                          type it's parsed as
+        new_bim_or_pvar_file: the bim or pvar file to write to; must end with
+                              .bim or .pvar, and the extension determines which
+                              file type it's written as. The prefix of this
+                              file will be used for the created bed/fam and
+                              pgen/psam files.
+        dbSNP: a DataFrame returned by load_dbSNP() for the genome build you
+               want to get chrom/bp positions for
+        separator: the string to place between the variant ID, reference
+                   allele, and alternate allele when creating temporary
+                   bim/pvar files (an internal step in this function); no
+                   variant IDs may contain the separator
+        verbose: whether to print what's happening at each step
+    """
+    check_valid_dbSNP(dbSNP)
+    is_pvar = get_bim_or_pvar_file_type(bim_or_pvar_file)
+    file_type = 'pvar' if is_pvar else 'bim'
+    if os.path.exists(new_bim_or_pvar_file):
+        raise ValueError(f'new {file_type} file "{new_bim_or_pvar_file}" '
+                         f'already exists! Delete it before running '
+                         f'get_positions_bim_or_pvar()')
+    if verbose:
+        print(f'Loading {file_type} file "{bim_or_pvar_file}"...')
+    variants = read_bim_or_pvar(bim_or_pvar_file)
+    if variants['SNP'].str.contains(separator).any():
+        raise ValueError(f'Some variant IDs in the {file_type} file '
+                         f'"{bim_or_pvar_file}" contain the separator '
+                         f'{separator!r}; specify a different separator '
+                         f'via the separator argument!')
+    if verbose:
+        print('Getting new positions...')
+    # Modify this once polars allows Categorical .str.slice():
+    # github.com/pola-rs/polars/issues/9773
+    new_variants = get_positions(variants, dbSNP=dbSNP)\
+        .drop_nulls(['CHROM', 'BP'])\
+        .with_columns(pl.col.CHROM.cast(str).str.slice(3))\
+        .drop('FLIP')
+    # Make variant IDs unique, like make_bim_or_pvar_IDs_unique() but without
+    # including chromosome, because variants can (very rarely) switch
+    # chromosomes between builds. Also make a file of uniquified variant IDs
+    # that were found in dbSNP.
+    bim_or_pvar_file_tmp = \
+        bim_or_pvar_file.replace(f'.{file_type}', f'.tmp.{file_type}')
+    found_variants_file = \
+        bim_or_pvar_file.replace(f'.{file_type}', '.found')
+    if verbose:
+        print(f'Saving a {file_type} with the original positions (with '
+              f'uniquified variant IDs) to "{bim_or_pvar_file_tmp}"...')
+    variants\
+        .with_columns(pl.concat_str('SNP', 'REF', 'ALT', separator=separator))\
+        .pipe(write_bim_or_pvar, bim_or_pvar_file_tmp)
+    if verbose:
+        print(f'Saving a list of variants found in dbSNP (with uniquified '
+              f'variant IDs) to "{found_variants_file}"...')
+    new_variants\
+        .select(pl.concat_str('SNP', 'REF', 'ALT', separator=separator))\
+        .write_csv(found_variants_file)
+    prefix = bim_or_pvar_file.removesuffix(f'.{file_type}')
+    new_prefix = new_bim_or_pvar_file.removesuffix(f'.{file_type}')
+    if verbose:
+        print(f'Subsetting to variants in dbSNP, saving to '
+              f'"{new_prefix}.tmp.{{pgen,pvar,psam}}"...')
+    run(f'plink2 '
+        f'{"" if verbose else "--silent"} '
+        f'--{"pfile" if is_pvar else "bfile"} "{prefix}" '
+        f'--pvar "{bim_or_pvar_file_tmp}" '
+        f'--extract "{found_variants_file}" '
+        f'--make-pgen '
+        f'--out "{new_prefix}.tmp"')
+    if verbose:
+        print(f'Updating "{new_prefix}.tmp.pvar" to the new positions...')
+    temp_pvar_file = f'{new_prefix}.tmp.pvar'
+    new_variant_order = read_bim_or_pvar(temp_pvar_file, categorical=True)\
+        .with_columns(SNP=pl.col.SNP.str.split_exact(separator, 1)
+                      .struct.field('field_0'))
+    assert len(new_variants) == len(new_variant_order)
+    new_variants = new_variant_order\
+        .select('SNP', 'REF', 'ALT')\
+        .join(new_variants, on=('SNP', 'REF', 'ALT'), how='left')
+    write_bim_or_pvar(new_variants, temp_pvar_file)
+    if verbose:
+        print(f'Sorting by the new positions, saving to "{new_prefix}.'
+              f'{{{"pgen,pvar,psam" if is_pvar else "bed,bim,fam"}}}"...')
+    run(f'plink2 '
+        f'{"" if verbose else "--silent"} '
+        f'--pfile "{new_prefix}.tmp" '
+        f'--sort-vars '
+        f'--make-pgen '
+        f'--out "{new_prefix}{"" if is_pvar else ".tmp2"}"')
+    if not is_pvar:
+        # Work around "Error: Fixed-width .bed/.pgen output doesn't support
+        # sorting yet. Generate a regular sorted .pgen first, and then reformat
+        # it.": groups.google.com/g/plink2-users/c/Vt-g0dblpw4
+        run(f'plink2 '
+            f'{"" if verbose else "--silent"} '
+            f'--pfile "{new_prefix}.tmp2" '
+            f'--make-bed '
+            f'--out "{new_prefix}"')
+    if verbose:
+        print('Cleaning up...')
+    run(f'rm "{bim_or_pvar_file_tmp}" "{found_variants_file}" '
+        f'"{new_prefix}.log" "{new_prefix}.tmp.pgen" "{new_prefix}.tmp.pvar" '
+        f'"{new_prefix}.tmp.psam" "{new_prefix}.tmp.log"')
+    if not is_pvar:
+        run(f'rm "{new_prefix}.tmp2.pgen" "{new_prefix}.tmp2.pvar" '
+            f'"{new_prefix}.tmp2.psam" "{new_prefix}.tmp2.log"')
+
+def read_gtf(file, attributes=["transcript_id"]):
+    return pl.read_csv(file, separator="\t", comment_prefix="#", new_columns=["seqname","source","feature","start","end","score","strand","frame","attributes"])\
+        .with_columns(
+            [pl.col("attributes").str.extract(rf'{attribute} "([^;]*)";').alias(attribute) for attribute in attributes]
+            ).drop("attributes")
