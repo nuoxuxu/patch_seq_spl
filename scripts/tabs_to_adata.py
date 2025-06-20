@@ -1,102 +1,189 @@
 #!/usr/bin/env python3
-import pandas as pd
-import dask.dataframe as dd
+import polars as pl
 from pathlib import Path
+from src2 import utils
 import numpy as np
-import anndata
-import src.data as sd
-from scipy.sparse import csr_matrix
+import pandas as pd
+import polars.selectors as cs
+import seaborn as sns
+import matplotlib.pyplot as plt
+from statsmodels.stats.multitest import fdrcorrection
 
-def main():
-    # Paths to input files
-    input_dir = snakemake.input.SJ_out_tabs
-    gtf_path = snakemake.input.gtf_path
-    path_to_manifest = snakemake.input.manifest
-    path_to_metadata = snakemake.input.metadata
+input_dir = "lampert_data/tab_files"
+gtf_path = "/project/s/shreejoy/Genomic_references/Ensembl/Homo_sapiens.GRCh38.113.chr.gtf"
+path_to_metadata = "lampert_data/patchseq-meta.csv"
 
-    # From metadata, get mapping from cell_specimen_id to ttype
-    metadata = pd.read_csv(path_to_metadata)
-    ID_to_ttype = metadata.loc[:, ["cell_specimen_id", "T-type Label"]]
-    ID_to_ttype = ID_to_ttype[~ID_to_ttype["T-type Label"].isna()] \
-        .set_index("cell_specimen_id") \
-        .to_dict()["T-type Label"]
+metadata = pl.read_csv(path_to_metadata, null_values = "NA")
 
-    # From manifest, get filenames of cells that have valid t-type labels (passed QC)
-    flist = pd.read_csv(path_to_manifest) \
-        .query("file_type == 'reverse_fastq'") \
-        .query("file_name.str.contains('fastq.gz')", engine = "python") \
-        .assign(file_name = lambda x : x.file_name.str.removesuffix("_R2.fastq.gz")) \
-        .loc[:, ["file_name", "cell_specimen_id"]] \
-        .assign(ttype = lambda x : x.cell_specimen_id.map(ID_to_ttype)) \
-        .dropna(subset = ["ttype"]) \
-        ["file_name"].to_list()
+combined = pl.scan_csv(
+        list(Path(input_dir).iterdir()), 
+        separator="\t", has_header= False, 
+        new_columns=["chrom", "start", "end", "strand", "motif", "annotated", "unique_reads", "multi_reads", "max_overhang"],
+        schema_overrides={"chrom": pl.String},
+        include_file_paths = "path"
+    ).collect()\
+    .with_columns(
+        cell_id = pl.col("path").str.split("_").map_elements(lambda x: x[2], return_dtype=pl.String)
+    )\
+    .with_columns(
+        pl.col("cell_id").str.split("/").map_elements(lambda x: x[1], return_dtype=pl.String)
+    ).drop("path")
 
-    print(f"{len(flist)} cells passed QC")
+combined = combined\
+    .filter(
+        pl.col("unique_reads")!=0
+    )\
+    .group_by("chrom", "start", "end", "strand", "cell_id")\
+    .agg(
+        pl.col("motif").first(),
+        pl.col("annotated").first(),
+        unique=pl.col("unique_reads").sum(),
+        multi=pl.col("multi_reads").first(),
+        max_overhang=pl.col("max_overhang").first(),
+    )
 
-    # get the list of paths to SJ.out.tab files
-    path_list = [Path(input_dir).joinpath(f"{directory}SJ.out.tab") for directory in flist]
-    path_list = [path for path in path_list if Path(path).is_file()]
-    print(f"{len(path_list)} SJ.out.tab files found out of {len(flist)} qualified cells")
+# filter out some uncannonical introns
+combined = combined.filter(
+    ~((pl.col("annotated") == 0) & (pl.col("motif") != 0) & (pl.col("max_overhang") < 20))
+).filter(
+    ~((pl.col("annotated") == 0) & (pl.col("motif") == 0) & (pl.col("max_overhang") < 30))
+)
 
-    # check if the files are empty
-    path_list = [path for path in path_list if Path(path).stat().st_size > 0]
-    print(f"{len(path_list)} SJ.out.tab files are non-empty")
+# Sharing end for now
+sharing_end = combined\
+    .with_columns(
+        pl.col("start").cast(pl.String),
+        pl.col("end").cast(pl.String),
+        pl.col("strand").cast(pl.String),
+        pl.col("cell_id").cast(pl.Int64),
+    )\
+    .with_columns(
+        pl.col("strand").replace({1: "+", 2: "-"}),
+    )\
+    .with_columns(
+        SJ_group = pl.col("chrom") + pl.lit(":") + pl.col("end") + pl.lit("_") + pl.col("strand"),
+        SJ = pl.col("chrom") + pl.lit(":") + pl.col("end") + pl.lit("_") + pl.col("strand") + pl.lit("_") + pl.col("start"),
+    )\
+    .filter(
+        pl.col("cell_id").is_in(metadata["cell_id"].to_list())
+    )
 
-    # Use Dask to read all tab files into memory and concatenate
-    combined = dd.read_csv(path_list, 
-                sep = "\t",
-                names = ["chromosome", "start", "end", "strand", "intron_motif", "annotation", "unique", "multi", "max_overhang"],
-                dtype = {"chromosome": "object", "strand": "category", "intron_motif": "category", "annotation": "category"},
-                include_path_column = True)
+# Keeping only SJ_group that are in more than 15 cells
+SJ_group_to_keep = sharing_end.group_by("SJ_group")\
+    .agg(
+        pl.col("cell_id").count()
+    )\
+    .filter(
+        pl.col("cell_id") > 15
+    ).select("SJ_group")
 
-    # remove path prefix
-    combined.path = combined.path.apply(lambda x: Path(x).name.removesuffix("SJ.out.tab"), meta=('str'))
+sharing_end = sharing_end.filter(pl.col("SJ_group").is_in(SJ_group_to_keep))
 
-    # removed all rows that have unique == 0
-    combined = combined[combined.unique != 0]
+# Getting the SJ ratio matrix
+total_unique_per_group = sharing_end.group_by("SJ_group").agg(pl.col("unique").sum()).rename({"unique": "total_unique_per_group"})
 
-    # filter out some uncannonical introns
-    combined = combined[np.logical_not((combined.annotation == 0) & (combined.intron_motif != 0) & (combined.max_overhang < 20))]
-    combined = combined[np.logical_not((combined.annotation == 0) & (combined.intron_motif == 0) & (combined.max_overhang < 30))]
+sharing_end = sharing_end\
+    .join(
+        total_unique_per_group, 
+        on="SJ_group", 
+        how="left"
+    )\
+    .with_columns(
+        ratio = pl.col("unique") / pl.col("total_unique_per_group")
+    )
 
-    # convert dask df to pandas df and do the rest in pandas
-    combined = combined.compute()
+ratio_matrix = sharing_end.select("SJ", "ratio", "cell_id")\
+    .pivot(
+        index="cell_id",
+        on="SJ",
+        values="ratio"
+    )\
+    .sort("cell_id")\
+    .drop("cell_id")\
+    .fill_null(strategy="mean")
 
-    # Obtain unique introns
-    features = combined.groupby(["start", "end"], as_index = False).agg({"chromosome": "first", "start": "first", "end": "first", "strand": "first", "intron_motif": "first", "annotation": "first", "unique": "sum", "multi": "sum", "max_overhang": "first"})
-    features = features.reset_index(drop = True)
+# Getting the ephys props
+ephys_prop = metadata['RMP', 'pA_start', 'pA_threshold', 'Rheobase', 'input_res', 'Input_res_new', 'AP_threshhold', 'AP_max', 'Apamp', 'Min_AHP', 'Loc_APHW', 'APD', 'max_slope_raw', 'max_slope_smth', 'slope_oversh', 'PC1']\
+    .fill_null(strategy="mean")
 
-    # we need to label each intron in the combined dataframe with the intron index
-    features = features.assign(i = features.index)
-    X = pd.merge(combined, features[["start", "end", "i"]], on = ["start", "end"], how = "inner")
+# Correlating the ratio matrix with the ephys properties
+corr_matrix, p_value_matrix = utils.correlate(ratio_matrix, ephys_prop)
 
-    # Pivot the df to obtain intron count matrix
-    X = X.pivot(index = "path", columns = "i", values = "unique")
-    X.fillna(0, inplace = True)
+p_value_matrix = pl.concat([pl.Series("SJ", ratio_matrix.columns).to_frame(), p_value_matrix], how="horizontal")
 
-    # construct adata object from X and features
-    adata = anndata.AnnData(csr_matrix(X))
-    adata.obs_names = X.index.to_list()
-    adata.var = features
+p_value_matrix = p_value_matrix.drop_nans()
 
-    # add gene annotation
-    adata = sd.add_gene_annotation(adata, gtf_path, filter_unique_gene=True)
+_, qvals = fdrcorrection(p_value_matrix.drop("SJ").to_numpy().flatten())
 
-    # change strand annotation
-    adata.var.strand = adata.var.strand.replace({"1": "+", "2": "-"})
+corr_p_value_matrix = pd.DataFrame(
+    qvals.reshape( p_value_matrix.shape[0], p_value_matrix.shape[1] - 1 ),
+    index = p_value_matrix["SJ"],
+    columns = p_value_matrix.drop("SJ").columns
+)\
+.pipe(pl.from_pandas, include_index=True)\
+.rename({"None": "SJ"})\
+.with_columns(
+    cs.exclude("SJ") < 0.05
+)\
+.with_columns(
+    sum = pl.sum_horizontal(cs.exclude("SJ"))
+)\
+.filter(pl.col("sum") != 0)
 
-    # group introns by sharing three prime splice site
-    adata = sd.group_introns(adata, snakemake.wildcards.group_by)
+# Add back the gene names
+corr_p_value_matrix.select("SJ").write_csv("lampert_data/SJ_names.csv")
+SJ_pig_genes = pl.read_csv("lampert_data/SJ_pig_genes.csv")
 
-    # remove introns from weird chromosomes
-    adata = adata[:, ~(pd.isnull(adata.var.gene_name) == True)]
+corr_p_value_matrix = corr_p_value_matrix\
+    .join(
+        SJ_pig_genes,
+        on="SJ",
+        how="left"
+    )\
+    .filter(
+        pl.col("pig_gene_name").is_not_null()
+    )\
+    .with_columns(
+        SJ = pl.col("pig_gene_name") + pl.lit("_") + pl.col("SJ")
+    )\
+    .drop("pig_gene_name")
 
-    # h5ad cannot have columns with mixied types
-    adata.var.canonical_end = adata.var.canonical_end.map({True: 1, False: 0, "": 2})
-    adata.var.canonical_start = adata.var.canonical_start.map({True: 1, False: 0, "": 2})
+# Plotting
 
-    # Write adata objects to disk
-    adata.write(snakemake.output[0])
+SJ_to_show = p_value_matrix\
+    .with_columns(
+        cs.exclude("SJ") < 0.05
+    )\
+    .with_columns(
+        sum = pl.sum_horizontal(cs.exclude("SJ"))
+    )\
+    .sort("sum", descending=True)[:50, :]\
+    .select("SJ")
 
-if __name__ == "__main__":
-    main()
+df = p_value_matrix.filter(pl.col("SJ").is_in(SJ_to_show))
+
+df = pd.DataFrame(
+    -np.log10(df.drop("SJ").to_numpy()),
+    index = df["SJ"],
+    columns = df.drop("SJ").columns
+)
+
+fig, ax = plt.subplots(figsize=(14, 10))
+
+sns.heatmap(
+    data = df,
+    ax = ax
+)
+
+plt.savefig("heatmap.pdf", bbox_inches='tight')
+
+# Looking at the genes
+SJ_to_show\
+    .with_columns(
+        gene_name = pl.col("SJ").str.split("_").map_elements(lambda x: x[0], return_dtype=pl.String)
+    )\
+    .select("gene_name")\
+    .write_csv("lampert_data/genes_to_check.csv")
+
+
+corr_p_value_matrix.sort("sum", descending=True).write_csv("lampert_data/corr_p_value_matrix.csv")
