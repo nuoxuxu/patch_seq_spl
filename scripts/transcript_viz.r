@@ -1,6 +1,5 @@
 suppressMessages(
     {
-        library(tidyverse)
         library(ggplot2)
         library(rtracklayer)
         library(stringr)
@@ -129,7 +128,7 @@ get_xlim <- function(sig_intron_attr_subset, exonByTranscript) {
     c(xmin, xmax)
 }
 
-get_base_plot <- function(annodation_gene_name, fill_by) {
+get_base_plot <- function(annodation_gene_name) {
     library(ggtranscript)
     exons <- subset(annodation_gene_name, mcols(annodation_gene_name)$type == "exon") %>%
         as.data.frame()
@@ -148,8 +147,7 @@ get_base_plot <- function(annodation_gene_name, fill_by) {
             height = 0.25
         ) +
         geom_range(
-            data = cds,
-            aes(fill = !!sym(fill_by))
+            data = cds
         ) +
         geom_intron(
             data = to_intron(exons, "transcript_name"),
