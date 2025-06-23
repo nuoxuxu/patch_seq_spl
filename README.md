@@ -4,25 +4,11 @@
 
 ### Setting up conda environment
 Install required packages in a new conda environment from `environment.yml`.
-If you are doing this on a local machine:
 ```bash
-mamba env create -n patch_seq_spl
-```
-If you are doing this on Niagara, clone the repository to `$SCRATCH` and `cd` to the project root:
-```bash
-mamba env create -p ./envs/patch_seq_spl
-```
-
-- Use `Python: Select Interpreter command` in VS code to set the workspace-level Python interpreter as `.env/bin/python`
-- Turn on `python.terminal.activateEnvInCurrentTerminal`
-- Create a symbolic link, absolute path has to be used 
-```bash
-ln -s /scratch/s/shreejoy/nxu/patch_seq_spl/env ${CONDA_PREFIX}/envs/patch_seq_spl
+mamba env create --prefix ./env --file environment.yml
 ```
 
 ### Setting up R environment
-Since R packages on conda-forge channels are out-dated in general and the bioconda channel does not support osx-arm64, it's better to not install R packages within the conda environment.
-
 Install R packages required for this project
 ```r
 remotes::install_github("nx10/httpgd")
@@ -32,7 +18,6 @@ devtools::install_github("dzhang32/ggtranscript")
 ```
 
 ## Getting data
-
 Download processed data from Niagara
 
 ```bash
