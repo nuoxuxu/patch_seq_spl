@@ -11,6 +11,7 @@ from statsmodels.stats.multitest import fdrcorrection
 
 input_dir = "lampert_data/tab_files"
 path_to_metadata = "lampert_data/patchseq-meta.csv"
+SJ_pig_genes = pl.read_csv("lampert_data/SJ_pig_genes.csv")
 
 metadata = pl.read_csv(path_to_metadata, null_values = "NA")
 
@@ -72,7 +73,7 @@ SJ_group_to_keep = sharing_end.group_by("SJ_group")\
     )\
     .filter(
         pl.col("cell_id") > 15
-    ).select("SJ_group")
+    )["SJ_group"].to_list()
 
 sharing_end = sharing_end.filter(pl.col("SJ_group").is_in(SJ_group_to_keep))
 
@@ -88,6 +89,23 @@ sharing_end = sharing_end\
     .with_columns(
         ratio = pl.col("unique") / pl.col("total_unique_per_group")
     )
+
+sharing_end.unique("SJ").select("SJ").write_csv("lampert_data/SJ_names.csv")
+
+SJ_pig_genes = pl.read_csv("lampert_data/SJ_pig_genes.csv")
+
+sharing_end = sharing_end\
+    .join(
+        SJ_pig_genes,
+        on="SJ",
+        how="left"
+    )\
+    .drop_nulls()\
+    .with_columns(
+        SJ = pl.col("pig_gene_name") + pl.lit("_") + pl.col("SJ")
+    )    
+
+sharing_end.unique("SJ").drop("cell_id", "pig_gene_name", "total_unique_per_group", "ratio").write_csv("lampert_data/SJ_attributes.csv")
 
 ratio_matrix = sharing_end.select("SJ", "ratio", "cell_id")\
     .pivot(
