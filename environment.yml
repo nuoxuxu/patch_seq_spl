@@ -21,3 +21,4 @@ dependencies:
   - pyarrow
   - dask
   - pysam
+  - star=2.7.11b
