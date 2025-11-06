@@ -8,18 +8,19 @@ import pickle
 
 def main():
     parser = argparse.ArgumentParser(description="Run GLM for differential splicing analysis.")
-    parser.add_argument("--mode", type=str, required=True, help="Sharing mode ('three' or 'five').")
-    parser.add_argument("--predictor", type=str, required=True, help="Predictor variable for the model.")
-    parser.add_argument("--model", type=str, required=True, help="Model type ('simple' or 'multiple').")
     parser.add_argument("--sharing", type=str, required=True, help="Grouping variable ('three' or 'five').")
+    parser.add_argument("--mode", type=str, required=True, help="Sharing mode ('three' or 'five').")
+    parser.add_argument("--model", type=str, required=True, help="Model type ('simple' or 'multiple').")
+    parser.add_argument("--predictor", type=str, required=True, help="Predictor variable for the model.")
+    parser.add_argument("--chunk", type=int, required=True, help="Chunk number.")   
     args = parser.parse_args()
 
     ratio_matrix = pl.read_parquet(f"proc/ratio_matrix_{args.sharing}_{args.mode}.parquet")
     ephys_data = pd.read_parquet(f"proc/ephys_data_{args.sharing}_{args.mode}.parquet")
 
-    SJ_list = ratio_matrix.columns[1:]
-    SJ_list = [s.rsplit('_', 1)[0] for s in SJ_list]
-
+    with open (f"proc/ratio_matrix/{args.sharing}_{args.mode}/{args.chunk}.txt", "r") as f:
+        SJ_list = f.read().splitlines()
+    
     if args.predictor == "cpm":
         #TODO: implement cpm regression joblib version
         for intron_group in SJ_list:
@@ -42,13 +43,11 @@ def main():
             full = f"subclass + {args.predictor}"
         else:
             raise ValueError("Model type not recognized. Use 'simple' or 'multiple'.")
-        results = Parallel(n_jobs=6, backend="threading")(
-            delayed(ds.run_regression)(ratio_matrix, ephys_data, intron_group, reduced, full)
-            for intron_group in SJ_list
-        )
+        results = [ds.run_regression(ratio_matrix, ephys_data, intron_group, reduced, full) for intron_group in SJ_list]
 
-        with open(f"results/GLM_results_{args.sharing}_cell_{args.model}_{args.predictor}.pkl", "wb") as f:
+        with open (f"results/{args.sharing}_{args.mode}_{args.model}/{args.predictor}/{args.chunk}.pkl", "wb") as f:
             pickle.dump(results, f)
 
 if __name__ == "__main__":
     main()
+
