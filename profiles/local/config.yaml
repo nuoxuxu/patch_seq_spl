@@ -1,2 +1,6 @@
-use-conda: true
-cores: 4
+jobs: 6
+cores: 192
+set-threads:
+  star_index: 32
+  star_align: 32
+  run_GLM: 32

@@ -1,1 +1,15 @@
 executor: slurm
+jobs: 10
+set-threads:
+  star_index: 32
+  star_align: 1
+  run_GLM: 192
+set-resources:
+  star_index:
+      runtime: "1h"
+      slurm_partition: "debug"
+  star_align:
+      runtime: "1h"
+      slurm_partition: "debug"
+  run_GLM:
+      runtime: "30"
