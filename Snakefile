@@ -1,142 +1,145 @@
-import scanpy as sc
 import pandas as pd
-from pathlib import Path
-import numpy as np
-import src.differential_splicing as ds
-import os
-import platform
-import json
-import random
 
-configfile: "config/config.yaml"
-localrules: preprocess, download_metadata, download_manifest, download_cpm, generate_bam_list
+df = pd.read_csv("data/2021-09-13_mouse_file_manifest.csv")
+sample_list = (
+    df.loc[df["file_type"] == "forward_fastq", "file_name"]
+    .str.replace("_R1.fastq.gz", "", regex=False)
+    .tolist()
+)
 
-ephys_props = pd.read_csv("data/ephys_data_sc.csv").columns[1:].to_list()
-continuous_predictors = ephys_props + ["soma_depth", "cpm"]
-categorical_predictors = ['Sst', 'Pvalb', 'Vip', 'Lamp5', 'Sncg', 'Serpinf1', 'subclass']
-with open("data/mappings/transcriptomics_file_name_cell_type.json", "r") as f:
-    transcriptomics_file_name_cell_type = json.load(f)
-transcriptomics_file_name_cell_type = {k: v.replace(" ", "_") for k, v in transcriptomics_file_name_cell_type.items()}         
-cell_types = list(set(transcriptomics_file_name_cell_type.values()))
-all_predictors = continuous_predictors + categorical_predictors
-runtime_dict = {"simple": "3h", "multiple": "24h"}
+# remove problematic sample as in original
+sample_list.remove("SM-GBMG3_E1-50_AGTTAGCTGG-CATTCTCATC")
 
-metadata = pd.read_csv('data/20200711_patchseq_metadata_mouse.csv')
-with open("data/mappings/transcriptomics_sample_id_file_name.json", "r") as f:
-    transcriptomics_sample_id_file_name = json.load(f)
-metadata["filename"] = metadata.transcriptomics_sample_id.map(transcriptomics_sample_id_file_name)
-metadata.dropna(subset=["filename"], inplace=True)
-metadata["full_path"] = metadata["filename"].apply(lambda x: "".join(["/external/rprshnas01/netdata_kcni/stlab/Nuo/STAR_for_SGSeq/coord_bams/", x, "Aligned.sortedByCoord.out.bam"]) if x else None)
-metadata["T-type Label"] = metadata["T-type Label"].map(lambda x: "_".join(x.split(" ")))
+ephys_df = pd.read_csv("data/ephys_data_sc.csv")
+ephys_list = ephys_df.columns.tolist()[1:]
 
-# rule all:
-#     input:
-#         expand("proc/quantas/beta_binomial/{predictor}.csv", predictor=ephys_props)
-
-rule all:
+rule all: 
     input:
-        expand("proc/scquint/three/simple/{predictor}.csv", predictor=cell_types, allow_missing=True)
+        expand("results/three_ttype_simple/{ephys}/{chunk}.pkl", ephys=ephys_list, chunk=range(1, 60))
 
-# rule all:
-#     input:
-#         expand("proc/merge_bams/{cell_type}.bam", cell_type=metadata["T-type Label"].unique())
-
-# rule all:
-#     input:
-#         expand("proc/merge_bams/{cell_type}.bam.bai", cell_type=metadata["T-type Label"].unique())        
-
-rule download_metadata:
-    output: "data/20200711_patchseq_metadata_mouse.csv"
-    shell: "curl -O {output} https://brainmapportal-live-4cc80a57cd6e400d854-f7fdcae.divio-media.net/filer_public/0f/86/0f861fcb-36d5-4d3a-80e6-c3c04f34a8c7/20200711_patchseq_metadata_mouse.csv"
-
-rule download_manifest:
-    output: "data/2021-09-13_mouse_file_manifest.csv"
-    conda: "patch_seq_spl"
+rule star_index:
+    input:
+        fasta=Path(os.environ["GENOMIC_DATA_DIR"]).joinpath("Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.dna.primary_assembly.fa"),
+        gtf=Path(os.environ["GENOMIC_DATA_DIR"]).joinpath("Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.110.gtf")
+    output:
+        directory(Path(os.environ["GENOMIC_DATA_DIR"]).joinpath("Ensembl/Mouse/Release_110/STAR_index")),
+    message:
+        "Testing STAR index"
+    log:
+        "logs/star_index.log",
     shell:
         """
-        curl https://brainmapportal-live-4cc80a57cd6e400d854-f7fdcae.divio-media.net/filer_public/81/1d/811d176c-9e06-431b-9691-427edbb6bbd7/2021-09-13_mouse_file_manifest.zip -o 2021-09-13_mouse_file_manifest.zip
-        unzip -a 2021-09-13_mouse_file_manifest.zip
-        xlsx2csv 2021-09-13_mouse_file_manifest.xlsx > {output}
-        rm -f 2021-09-13_mouse_file_manifest.zip 2021-09-13_patchseq_file_download_instructions.docx 2021-09-13_mouse_file_manifest.xlsx
+        STAR \
+            --runThreadN {threads} \
+             --runMode genomeGenerate \
+             --genomeDir {output} \
+             --genomeFastaFiles {input.fasta} \
+             --sjdbGTFfile {input.gtf}
         """
 
-rule download_cpm:
-    output: "data/20200513_Mouse_PatchSeq_Release_cpm.v2.csv"
+rule star_align:
+    input:
+        r1="data/transcriptome/{sample}/{sample}_R1.fastq.gz",
+        r2="data/transcriptome/{sample}/{sample}_R2.fastq.gz",
+        index=Path(os.environ["GENOMIC_DATA_DIR"]).joinpath("Ensembl/Mouse/Release_110/STAR_index")
+    output:
+        bam="proc/star/{sample}.Aligned.sortedByCoord.out.bam",
+        SJ_out_tab="proc/star/{sample}.SJ.out.tab",
+        gene_counts="proc/star/{sample}.ReadsPerGene.out.tab"
+    params:
+        out_prefix="proc/star/{sample}."
+    log:
+        "logs/star_align/{sample}.log",
     shell:
         """
-        curl https://data.nemoarchive.org/other/AIBS/AIBS_patchseq/transcriptome/scell/SMARTseq/processed/analysis/20200611/20200513_Mouse_PatchSeq_Release_cpm.v2.csv.tar -o 20200513_Mouse_PatchSeq_Release_cpm.v2.csv.tar
-        tar -xvf 20200513_Mouse_PatchSeq_Release_cpm.v2.csv.tar
-        rm -f 20200513_Mouse_PatchSeq_Release_cpm.v2.csv.tar
-        mv 20200513_Mouse_PatchSeq_Release_cpm.v2/20200513_Mouse_PatchSeq_Release_cpm.v2.csv {output}
-        rm -rf 20200513_Mouse_PatchSeq_Release_cpm.v2
+        STAR \
+            --runThreadN {threads} \
+             --genomeDir {input.index} \
+             --readFilesIn {input.r1} {input.r2} \
+             --readFilesCommand zcat \
+             --outFileNamePrefix {params.out_prefix} \
+             --outSAMtype BAM SortedByCoordinate \
+             --outSAMunmapped Within \
+             --quantMode GeneCounts
         """
 
-rule tabs_to_adata:
-    input: 
-        SJ_out_tabs="data/SJ_out_tabs",
+rule generate_sample_sheet:
+    input:
+        SJ_out_tab=expand("proc/star/{sample}.SJ.out.tab", sample=sample_list),
+        prefix="proc/star",
         metadata="data/20200711_patchseq_metadata_mouse.csv",
-        manifest="data/2021-09-13_mouse_file_manifest.csv",
-        gtf_path=Path(os.environ["GENOMIC_DATA_DIR"]).joinpath("Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.110.gtf")        
-    output: "proc/scquint/adata_{group_by}.h5ad"
-    resources: 
-        runtime = "1h"
-    script: "scripts/tabs_to_adata.py"
+        file_manifest="data/2021-09-13_mouse_file_manifest.csv"
+    output:
+        "proc/sample_sheet.csv"
+    log:
+        "logs/sample_sheet.log"
+    script: "scripts/sample_sheet.py"
 
-# group_by is either "three" or "five"
 rule preprocess:
-    input: 
-        adata_path="proc/scquint/adata_{group_by}.h5ad",
-    output: "proc/scquint/preprocessed_adata_{group_by}.h5ad"
-    script: "scripts/preprocess.py"
+    input:
+        sample_sheet="proc/sample_sheet.csv",
+        file_manifest="data/2021-09-13_mouse_file_manifest.csv",
+        metadata="data/20200711_patchseq_metadata_mouse.csv",
+        ephys_data="data/ephys_data_sc.csv",
+        gtf_file=Path(os.environ["GENOMIC_DATA_DIR"]).joinpath("Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.110.gtf")
+    output:
+        "proc/ratio_matrix_{sharing}_{mode}.parquet",
+        "proc/ephys_data_{sharing}_{mode}.parquet"
+    params:
+        sharing=lambda wildcards: wildcards.sharing,
+        mode=lambda wildcards: wildcards.mode
+    log:
+        "logs/preprocess_{sharing}_{mode}.log"
+    shell:
+        """
+        scripts/preprocess.py \
+            --sample_sheet {input.sample_sheet} \
+            --file_manifest {input.file_manifest} \
+            --metadata {input.metadata} \
+            --ephys_data {input.ephys_data} \
+            --gtf_file {input.gtf_file} \
+            --sharing {params.sharing} \
+            --mode {params.mode}
+        """
 
-# predictor is "cpm", "soma_depth" and any of the ephys props
-# model is either "simple", "multiple" or "categorical"
+rule generate_chunks:
+    input:
+        ratio_matrix="proc/ratio_matrix_{sharing}_{mode}.parquet"
+    output:
+        expand("proc/ratio_matrix/{{sharing}}_{{mode}}/{chunk}.txt", chunk=range(1, 61))
+    params:
+        sharing=lambda wildcards: wildcards.sharing,
+        mode=lambda wildcards: wildcards.mode
+    log:
+        "logs/generate_chunks_{sharing}_{mode}.log"
+    shell:
+        """
+        scripts/generate_chunks.py \
+            --sharing {params.sharing} \
+            --mode {params.mode} \
+            --num_chunks 60
+        """
+
 rule run_GLM:
-    input: "proc/scquint/preprocessed_adata_{group_by}.h5ad"
-    output: "proc/scquint/{group_by}/{model}/{predictor}.csv"
-    resources:
-        runtime = lambda wildcards: runtime_dict[wildcards.model]
-    script: "scripts/run_GLM.py"
-
-rule Fig1_heatmap:
-    script: "scripts/Fig1_heatmap.py"
-
-rule beta_binomial:
-    output:
-        "proc/quantas/{statistical_model}/{predictor}.csv"
-    resources:
-        runtime="1h"
-    conda: "test_arrow"
-    shell:
-        "Rscript scripts/beta_binomial.R {wildcards.predictor} {wildcards.statistical_model}"
-
-################# Merge BAMs #################
-rule generate_bam_list:
-    output:
-        "proc/merge_bams/{cell_type}.txt"
-    script:
-        "scripts/generate_bam_list.py"
-
-rule merge_bams:
     input:
-        "proc/merge_bams/{cell_type}.txt"
+        "proc/ratio_matrix/{sharing}_{mode}/{chunk}.txt",
+        "proc/ratio_matrix_{sharing}_{mode}.parquet",
+        "proc/ephys_data_{sharing}_{mode}.parquet"
     output:
-        "proc/merge_bams/{cell_type}.bam"
-    resources:
-        runtime=120,
-        mem_mb=50000,
-        threads=12
+        "results/{sharing}_{mode}_{model}/{predictor}/{chunk}.pkl"
+    params:
+        sharing=lambda wildcards: wildcards.sharing,
+        mode=lambda wildcards: wildcards.mode,
+        predictor=lambda wildcards: wildcards.predictor,
+        model=lambda wildcards: wildcards.model
+    log:
+        "logs/{sharing}_{mode}_{model}/{predictor}/{chunk}.log"
     shell:
-        "samtools merge -o {output} -b {input} -@ 8"
-
-rule index_bams:
-    input:
-        "proc/merge_bams/{cell_type}.bam"
-    output:
-        "proc/merge_bams/{cell_type}.bam.bai"
-    resources:
-        runtime=60,
-        mem_mb=150000,
-        threads=12
-    shell:
-        "samtools index {input} -@ 8"
+        """
+        scripts/run_GLM.py \
+            --sharing {params.sharing} \
+            --mode {params.mode} \
+            --model {params.model} \
+            --predictor {params.predictor} \
+            --chunk {wildcards.chunk}
+        """
