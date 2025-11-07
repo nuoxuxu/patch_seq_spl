@@ -15,7 +15,7 @@ ephys_list = ephys_df.columns.tolist()[1:]
 
 rule all: 
     input:
-        expand("results/three_ttype_simple/{ephys}/{chunk}.pkl", ephys=ephys_list, chunk=range(1, 60))
+        expand("results/{sharing}_{mode}_{model}/df/{predictor}.csv", predictor=ephys_list)
 
 rule star_index:
     input:
@@ -126,7 +126,7 @@ rule run_GLM:
         "proc/ratio_matrix_{sharing}_{mode}.parquet",
         "proc/ephys_data_{sharing}_{mode}.parquet"
     output:
-        "results/{sharing}_{mode}_{model}/{predictor}/{chunk}.pkl"
+        "proc/{sharing}_{mode}_{model}/{predictor}/{chunk}.pkl"
     params:
         sharing=lambda wildcards: wildcards.sharing,
         mode=lambda wildcards: wildcards.mode,
@@ -143,3 +143,12 @@ rule run_GLM:
             --predictor {params.predictor} \
             --chunk {wildcards.chunk}
         """
+
+rule combine_results:
+    input:
+        expand("proc/{{sharing}}_{{mode}}_{{model}}/{{predictor}}/{chunk}.pkl", chunk=range(1, 61))
+    output:
+        "results/{sharing}_{mode}_{model}/df/{predictor}.csv",
+        "results/{sharing}_{mode}_{model}/ndarray/{predictor}.pkl"
+    script:
+        "scripts/combine_results.py"

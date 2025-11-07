@@ -45,7 +45,7 @@ def main():
             raise ValueError("Model type not recognized. Use 'simple' or 'multiple'.")
         results = [ds.run_regression(ratio_matrix, ephys_data, intron_group, reduced, full) for intron_group in SJ_list]
 
-        with open (f"results/{args.sharing}_{args.mode}_{args.model}/{args.predictor}/{args.chunk}.pkl", "wb") as f:
+        with open (f"proc/{args.sharing}_{args.mode}_{args.model}/{args.predictor}/{args.chunk}.pkl", "wb") as f:
             pickle.dump(results, f)
 
 if __name__ == "__main__":
