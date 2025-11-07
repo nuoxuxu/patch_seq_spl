@@ -1,8 +1,8 @@
 executor: slurm
 jobs: 10
 set-threads:
-  star_index: 32
-  star_align: 1
+  star_index: 192
+  star_align: 192
   run_GLM: 192
 set-resources:
   star_index:
