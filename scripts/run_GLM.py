@@ -5,6 +5,7 @@ import pandas as pd
 import argparse
 from joblib import Parallel, delayed
 import pickle
+from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description="Run GLM for differential splicing analysis.")
@@ -44,7 +45,9 @@ def main():
         else:
             raise ValueError("Model type not recognized. Use 'simple' or 'multiple'.")
         results = [ds.run_regression(ratio_matrix, ephys_data, intron_group, reduced, full) for intron_group in SJ_list]
-
+        if Path(f"proc/{args.sharing}_{args.mode}_{args.model}/{args.predictor}").exists() is False:
+            print(f"Creating directory proc/{args.sharing}_{args.mode}_{args.model}/{args.predictor}")
+            Path(f"proc/{args.sharing}_{args.mode}_{args.model}/{args.predictor}").mkdir(parents=True)
         with open (f"proc/{args.sharing}_{args.mode}_{args.model}/{args.predictor}/{args.chunk}.pkl", "wb") as f:
             pickle.dump(results, f)
 
