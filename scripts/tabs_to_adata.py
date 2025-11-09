@@ -34,7 +34,7 @@ def main():
     print(f"{len(flist)} cells passed QC")
 
     # get the list of paths to SJ.out.tab files
-    path_list = [Path(input_dir).joinpath(f"{directory}SJ.out.tab") for directory in flist]
+    path_list = [Path(input_dir).joinpath(f"{directory}.SJ.out.tab") for directory in flist]
     path_list = [path for path in path_list if Path(path).is_file()]
     print(f"{len(path_list)} SJ.out.tab files found out of {len(flist)} qualified cells")
 
@@ -50,7 +50,7 @@ def main():
                 include_path_column = True)
 
     # remove path prefix
-    combined.path = combined.path.apply(lambda x: Path(x).name.removesuffix("SJ.out.tab"), meta=('str'))
+    combined.path = combined.path.apply(lambda x: Path(x).name.removesuffix(".SJ.out.tab"), meta=('str'))
 
     # removed all rows that have unique == 0
     combined = combined[combined.unique != 0]
