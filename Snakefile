@@ -11,6 +11,7 @@ import random
 configfile: "config/config.yaml"
 localrules: preprocess, download_metadata, download_manifest, download_cpm, generate_bam_list
 
+group_by = ["three", "five"]
 ephys_props = pd.read_csv("data/ephys_data_sc.csv").columns[1:].to_list()
 continuous_predictors = ephys_props + ["soma_depth", "cpm"]
 categorical_predictors = ['Sst', 'Pvalb', 'Vip', 'Lamp5', 'Sncg', 'Serpinf1', 'subclass']
@@ -33,9 +34,13 @@ metadata["T-type Label"] = metadata["T-type Label"].map(lambda x: "_".join(x.spl
 #     input:
 #         expand("proc/quantas/beta_binomial/{predictor}.csv", predictor=ephys_props)
 
+# rule all:
+#     input:
+#         expand("proc/scquint/three/simple/{predictor}.csv", predictor=ephys_props, allow_missing=True)
+
 rule all:
     input:
-        expand("proc/scquint/three/simple/{predictor}.csv", predictor=cell_types, allow_missing=True)
+         "results/scquint/three.h5ad"        
 
 # rule all:
 #     input:
@@ -47,7 +52,7 @@ rule all:
 
 rule tabs_to_adata:
     input: 
-        SJ_out_tabs="data/SJ_out_tabs",
+        SJ_out_tabs="proc/star/",
         metadata="data/20200711_patchseq_metadata_mouse.csv",
         manifest="data/2021-09-13_mouse_file_manifest.csv",
         gtf_path=Path(os.environ["GENOMIC_DATA_DIR"]).joinpath("Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.110.gtf")        
@@ -71,6 +76,16 @@ rule run_GLM:
     resources:
         runtime = lambda wildcards: runtime_dict[wildcards.model]
     script: "scripts/run_GLM.py"
+
+
+rule add_glm:
+    input:
+        adata_path="proc/scquint/preprocessed_adata_{group_by}.h5ad",
+        simple_result_list=expand("proc/scquint/{{group_by}}/simple/{predictor}.csv", predictor=ephys_props),
+        multiple_result_list=expand("proc/scquint/{{group_by}}/multiple/{predictor}.csv", predictor=ephys_props)
+    output:
+        "results/scquint/{group_by}.h5ad"
+    script: "scripts/add_glm_results.py"
 
 rule Fig1_heatmap:
     script: "scripts/Fig1_heatmap.py"
