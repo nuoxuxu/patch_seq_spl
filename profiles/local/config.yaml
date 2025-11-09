@@ -1,0 +1,6 @@
+jobs: 1
+cores: 192
+set-threads:
+  tabs_to_adata: 192
+  preprocess: 192
+  run_GLM: 192
