@@ -26,7 +26,7 @@ with open("data/mappings/transcriptomics_sample_id_file_name.json", "r") as f:
     transcriptomics_sample_id_file_name = json.load(f)
 metadata["filename"] = metadata.transcriptomics_sample_id.map(transcriptomics_sample_id_file_name)
 metadata.dropna(subset=["filename"], inplace=True)
-metadata["full_path"] = metadata["filename"].apply(lambda x: "".join(["/external/rprshnas01/netdata_kcni/stlab/Nuo/STAR_for_SGSeq/coord_bams/", x, "Aligned.sortedByCoord.out.bam"]) if x else None)
+metadata["full_path"] = metadata["filename"].apply(lambda x: "".join(["proc/star/", x, ".Aligned.sortedByCoord.out.bam"]) if x else None)
 metadata["T-type Label"] = metadata["T-type Label"].map(lambda x: "_".join(x.split(" ")))
 
 # rule all:
@@ -43,33 +43,7 @@ rule all:
 
 # rule all:
 #     input:
-#         expand("proc/merge_bams/{cell_type}.bam.bai", cell_type=metadata["T-type Label"].unique())        
-
-rule download_metadata:
-    output: "data/20200711_patchseq_metadata_mouse.csv"
-    shell: "curl -O {output} https://brainmapportal-live-4cc80a57cd6e400d854-f7fdcae.divio-media.net/filer_public/0f/86/0f861fcb-36d5-4d3a-80e6-c3c04f34a8c7/20200711_patchseq_metadata_mouse.csv"
-
-rule download_manifest:
-    output: "data/2021-09-13_mouse_file_manifest.csv"
-    conda: "patch_seq_spl"
-    shell:
-        """
-        curl https://brainmapportal-live-4cc80a57cd6e400d854-f7fdcae.divio-media.net/filer_public/81/1d/811d176c-9e06-431b-9691-427edbb6bbd7/2021-09-13_mouse_file_manifest.zip -o 2021-09-13_mouse_file_manifest.zip
-        unzip -a 2021-09-13_mouse_file_manifest.zip
-        xlsx2csv 2021-09-13_mouse_file_manifest.xlsx > {output}
-        rm -f 2021-09-13_mouse_file_manifest.zip 2021-09-13_patchseq_file_download_instructions.docx 2021-09-13_mouse_file_manifest.xlsx
-        """
-
-rule download_cpm:
-    output: "data/20200513_Mouse_PatchSeq_Release_cpm.v2.csv"
-    shell:
-        """
-        curl https://data.nemoarchive.org/other/AIBS/AIBS_patchseq/transcriptome/scell/SMARTseq/processed/analysis/20200611/20200513_Mouse_PatchSeq_Release_cpm.v2.csv.tar -o 20200513_Mouse_PatchSeq_Release_cpm.v2.csv.tar
-        tar -xvf 20200513_Mouse_PatchSeq_Release_cpm.v2.csv.tar
-        rm -f 20200513_Mouse_PatchSeq_Release_cpm.v2.csv.tar
-        mv 20200513_Mouse_PatchSeq_Release_cpm.v2/20200513_Mouse_PatchSeq_Release_cpm.v2.csv {output}
-        rm -rf 20200513_Mouse_PatchSeq_Release_cpm.v2
-        """
+#         expand("proc/merge_bams/{cell_type}.bam.bai", cell_type=metadata["T-type Label"].unique())
 
 rule tabs_to_adata:
     input: 
