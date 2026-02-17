@@ -37,7 +37,9 @@ def main():
     adata = anndata.read_h5ad(snakemake.input.adata_path)
     adata.uns["simple"] = get_glm_results(snakemake.input.simple_result_list, "p_value")
     adata.uns["multiple"] = get_glm_results(snakemake.input.multiple_result_list, "p_value")
-    adata.write_h5ad(snakemake.output[0])
+    with open(snakemake.output[0], "wb") as f:
+        import pickle
+        pickle.dump(adata, f)
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,22 @@
+// Example params file for Nextflow pipeline
+// Usage: nextflow run main.nf -params-file params.yaml
+
+params {
+    // Input configuration
+    dataset = 'sorensen'
+    config_file = './config/config.yaml'
+    group_by = 'three'
+    
+    // Output directories
+    output_dir = './proc'
+    results_dir = './results'
+    logs_dir = './logs'
+    
+    // Resource allocation (can be overridden by profile)
+    small_job_cpus = 2
+    small_job_memory = '4.GB'
+    medium_job_cpus = 8
+    medium_job_memory = '16.GB'
+    large_job_cpus = 16
+    large_job_memory = '64.GB'
+}

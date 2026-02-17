@@ -19,8 +19,10 @@ get_sig_gene_list <- function(glm_results, predictor) {
         stringr::str_extract("^[^_]*")
 }
 
+reticulate::use_condaenv("/scratch/nxu/patch_seq_spl/env", required = TRUE)
 anndata <- import("anndata")
-adata <- anndata$read_h5ad("results/preprocessed_adata_three.h5ad")
+get_glm_results <- import("scripts.add_glm_results.get_glm_results")
+adata <- anndata$read_h5ad("proc/scquint/preprocessed_adata_three.h5ad")
 glm_results <- adata$uns$simple
 prop_labels <- fromJSON("data/mappings/prop_names.json") %>% unlist()
 all_predictors <- glm_results %>% colnames()

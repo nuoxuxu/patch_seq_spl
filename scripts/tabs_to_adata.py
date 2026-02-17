@@ -6,39 +6,16 @@ import numpy as np
 import anndata
 import src.data as sd
 from scipy.sparse import csr_matrix
+import os
 
 def main():
-    # Paths to input files
-    input_dir = snakemake.input.SJ_out_tabs
-    gtf_path = snakemake.input.gtf_path
-    path_to_manifest = snakemake.input.manifest
-    path_to_metadata = snakemake.input.metadata
+    sample_sheet = snakemake.input['sample_sheet']
+    gtf_path = snakemake.config['gtf_path']
 
-    # From metadata, get mapping from cell_specimen_id to ttype
-    metadata = pd.read_csv(path_to_metadata)
-    ID_to_ttype = metadata.loc[:, ["cell_specimen_id", "T-type Label"]]
-    ID_to_ttype = ID_to_ttype[~ID_to_ttype["T-type Label"].isna()] \
-        .set_index("cell_specimen_id") \
-        .to_dict()["T-type Label"]
+    sample_sheet = sample_sheet[~sample_sheet["cell_type_label"].isna()]
 
-    # From manifest, get filenames of cells that have valid t-type labels (passed QC)
-    flist = pd.read_csv(path_to_manifest) \
-        .query("file_type == 'reverse_fastq'") \
-        .query("file_name.str.contains('fastq.gz')", engine = "python") \
-        .assign(file_name = lambda x : x.file_name.str.removesuffix("_R2.fastq.gz")) \
-        .loc[:, ["file_name", "cell_specimen_id"]] \
-        .assign(ttype = lambda x : x.cell_specimen_id.map(ID_to_ttype)) \
-        .dropna(subset = ["ttype"]) \
-        ["file_name"].to_list()
+    path_list = sample_sheet["path"].to_list()
 
-    print(f"{len(flist)} cells passed QC")
-
-    # get the list of paths to SJ.out.tab files
-    path_list = [Path(input_dir).joinpath(f"{directory}.SJ.out.tab") for directory in flist]
-    path_list = [path for path in path_list if Path(path).is_file()]
-    print(f"{len(path_list)} SJ.out.tab files found out of {len(flist)} qualified cells")
-
-    # check if the files are empty
     path_list = [path for path in path_list if Path(path).stat().st_size > 0]
     print(f"{len(path_list)} SJ.out.tab files are non-empty")
 
@@ -48,9 +25,6 @@ def main():
                 names = ["chromosome", "start", "end", "strand", "intron_motif", "annotation", "unique", "multi", "max_overhang"],
                 dtype = {"chromosome": "object", "strand": "category", "intron_motif": "category", "annotation": "category"},
                 include_path_column = True)
-
-    # remove path prefix
-    combined.path = combined.path.apply(lambda x: Path(x).name.removesuffix(".SJ.out.tab"), meta=('str'))
 
     # removed all rows that have unique == 0
     combined = combined[combined.unique != 0]
@@ -62,6 +36,9 @@ def main():
     # convert dask df to pandas df and do the rest in pandas
     combined = combined.compute()
 
+    # Add cell_specimen_id and cell_type_label columns
+    combined = pd.merge(combined, sample_sheet[["path", "cell_specimen_id", "cell_type_label"]], on = "path")
+
     # Obtain unique introns
     features = combined.groupby(["start", "end"], as_index = False).agg({"chromosome": "first", "start": "first", "end": "first", "strand": "first", "intron_motif": "first", "annotation": "first", "unique": "sum", "multi": "sum", "max_overhang": "first"})
     features = features.reset_index(drop = True)
@@ -71,7 +48,7 @@ def main():
     X = pd.merge(combined, features[["start", "end", "i"]], on = ["start", "end"], how = "inner")
 
     # Pivot the df to obtain intron count matrix
-    X = X.pivot(index = "path", columns = "i", values = "unique")
+    X = X.pivot(index = "cell_specimen_id", columns = "i", values = "unique")
     X.fillna(0, inplace = True)
 
     # construct adata object from X and features

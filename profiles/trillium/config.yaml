@@ -1,0 +1,9 @@
+executor: slurm
+jobs: 6
+set-threads:
+  tabs_to_adata: 192
+  preprocess: 192
+  run_GLM: 192
+set-resources:
+  run_GLM:
+    runtime: "12h"

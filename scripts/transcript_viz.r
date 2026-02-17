@@ -56,7 +56,7 @@ get_exonByTranscript <- function(my_intron_group, adjacent_only = TRUE) {
     exonByTranscript <- split(annotation_for_gene, mcols(annotation_for_gene)$transcript_name)
 
     sig_intron_attr_subset <- sig_intron_attr %>%
-        subset(mcols(.)$event_name == my_intron_group)
+        subset(mcols(.)$intron_group == my_intron_group)
 
     if (adjacent_only) {
         hits <- findAdjacent(sig_intron_attr_subset, exonByTranscript)
@@ -76,7 +76,7 @@ get_junctions <- function(my_intron_group, adjacent_only = TRUE) {
     exonByTranscript <- split(annotation_for_gene, mcols(annotation_for_gene)$transcript_name)
 
     sig_intron_attr_subset <- sig_intron_attr %>%
-        subset(mcols(.)$event_name == my_intron_group)
+        subset(mcols(.)$intron_group == my_intron_group)
 
     if (adjacent_only) {
         hits <- findAdjacent(sig_intron_attr_subset, exonByTranscript)

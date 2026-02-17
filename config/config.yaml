@@ -1,3 +1,8 @@
 min_global_SJ_counts: 30
 min_cells_per_feature: 30
 min_cells_per_intron_group: 40
+gtf_path: "/project/rrg-shreejoy/Genomic_references/Ensembl/Mouse/Release_110/Raw/Mus_musculus.GRCm39.110.gtf"
+gouwens_metadata: "data/gouwens/20200711_patchseq_metadata_mouse.csv"
+gouwens_file_manifest: "data/gouwens/2021-09-13_mouse_file_manifest.csv"
+sorensen_metadata: "data/sorensen/pseq_genotype_reporter_by_id.csv"
+sorensen_file_manifest: "data/sorensen/exc_patchseq_file_manifest.csv"
