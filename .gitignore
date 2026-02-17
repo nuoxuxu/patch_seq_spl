@@ -40,3 +40,8 @@ proc/
 logs/
 results/
 figures/
+
+# Nextflow
+nextflow_results/
+.nextflow.log*
+.nextflow/
